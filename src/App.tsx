@@ -125,6 +125,11 @@ export default function App(): React.JSX.Element {
           return lower as 'customer' | 'business' | 'roadking' | 'admin';
         }
       }
+      // Packaged native builds have no URL query string to key off of;
+      // this Customer app target defaults straight into the customer view.
+      if (window.hasOwnProperty('Capacitor') || window.location.protocol === 'capacitor:') {
+        return 'customer';
+      }
     }
     return null;
   });
