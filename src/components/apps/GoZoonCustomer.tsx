@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Search, MapPin, ShoppingBag, Clock, Tag, Award, Check, ChevronLeft, Star, Phone, HelpCircle, Navigation, ShieldAlert, CreditCard } from 'lucide-react';
+import { Search, MapPin, ShoppingBag, Clock, Tag, Award, Check, ChevronLeft, Star, Phone, HelpCircle, Navigation, ShieldAlert, CreditCard, ClipboardList, History } from 'lucide-react';
 import { Restaurant, CartItem, Order, UKPostcodeZone, MenuItem, OrderStatus, CartCustomization } from '../../types';
 import { validateUKPostcode } from '../../data/restaurants';
 
@@ -14,6 +14,7 @@ interface GoZoonCustomerProps {
   onCheckout: (address: string, postcode: string, cardName: string) => void;
   activeOrderId: string | null;
   onResetActiveOrder: () => void;
+  onSetActiveOrder: (id: string | null) => void;
   orders: Order[];
   closedRestaurants: string[];
   outOfStockItems: string[];
@@ -36,6 +37,7 @@ export default function GoZoonCustomer({
   onCheckout,
   activeOrderId,
   onResetActiveOrder,
+  onSetActiveOrder,
   orders,
   closedRestaurants,
   outOfStockItems,
@@ -51,6 +53,7 @@ export default function GoZoonCustomer({
   const [customizingItem, setCustomizingItem] = useState<MenuItem | null>(null);
   const [customizationNotes, setCustomizationNotes] = useState('');
   const [isCartOpen, setIsCartOpen] = useState(false);
+  const [isOrdersOpen, setIsOrdersOpen] = useState(false);
   const [isChangingPostcode, setIsChangingPostcode] = useState(false);
   const [postcodeInput, setPostcodeInput] = useState(currentPostcode.postcode);
   const [postcodeError, setPostcodeError] = useState('');
@@ -228,6 +231,23 @@ export default function GoZoonCustomer({
     }, 1200);
   };
 
+  const handleReorder = (order: Order) => {
+    // Clear current cart first
+    if (cart.length > 0) {
+      cart.forEach(item => onRemoveCartItem(item.id));
+    }
+    const rest = restaurantsList.find(r => r.id === order.restaurantId);
+    if (rest) {
+      setSelectedRestaurant(rest);
+    }
+    order.items.forEach(item => {
+      onAddToCart(item);
+    });
+    setIsOrdersOpen(false);
+    setIsCartOpen(true);
+    setCheckoutStep('cart');
+  };
+
   // Calculations for basket
   const cartSubtotal = cart.reduce((acc, item) => {
     const customizationsCost = item.customizations.reduce((sum, c) => sum + c.additionalPrice, 0);
@@ -339,34 +359,53 @@ export default function GoZoonCustomer({
           <span className="font-extrabold text-brand-blue text-sm">Go-Zoon</span>
         </div>
 
-        {/* Deliver to address */}
-        <div className="relative">
-          <button 
-            onClick={() => setIsChangingPostcode(!isChangingPostcode)}
-            className="flex items-center gap-1 px-2.5 py-1 bg-slate-100 hover:bg-slate-200 rounded-full text-[11px] font-bold text-slate-700"
-          >
-            <MapPin className="w-3.5 h-3.5 text-brand-orange" />
-            <span className="truncate max-w-[100px]">{currentPostcode.postcode}</span>
-          </button>
+        {/* Deliver to address and Orders button */}
+        <div className="flex items-center gap-1.5">
+          <div className="relative">
+            <button 
+              onClick={() => setIsChangingPostcode(!isChangingPostcode)}
+              className="flex items-center gap-1 px-2.5 py-1 bg-slate-100 hover:bg-slate-200 rounded-full text-[11px] font-bold text-slate-700"
+            >
+              <MapPin className="w-3.5 h-3.5 text-brand-orange" />
+              <span className="truncate max-w-[80px]">{currentPostcode.postcode}</span>
+            </button>
 
-          {isChangingPostcode && (
-            <div className="absolute top-8 right-0 w-56 bg-white border border-slate-200 rounded-xl shadow-xl p-3 z-50">
-              <form onSubmit={handlePostcodeApply} className="space-y-2">
-                <input
-                  type="text"
-                  required
-                  value={postcodeInput}
-                  onChange={(e) => setPostcodeInput(e.target.value)}
-                  placeholder="e.g. SW1A 1AA"
-                  className="w-full text-xs px-2 py-1.5 border border-slate-300 rounded-md uppercase"
-                />
-                <button type="submit" className="w-full bg-brand-orange text-white text-xs font-bold py-1.5 rounded-md">
-                  Apply Postcode
-                </button>
-                {postcodeError && <p className="text-[10px] text-red-500 font-medium">{postcodeError}</p>}
-              </form>
-            </div>
-          )}
+            {isChangingPostcode && (
+              <div className="absolute top-8 right-0 w-56 bg-white border border-slate-200 rounded-xl shadow-xl p-3 z-50">
+                <form onSubmit={handlePostcodeApply} className="space-y-2">
+                  <input
+                    type="text"
+                    required
+                    value={postcodeInput}
+                    onChange={(e) => setPostcodeInput(e.target.value)}
+                    placeholder="e.g. SW1A 1AA"
+                    className="w-full text-xs px-2 py-1.5 border border-slate-300 rounded-md uppercase"
+                  />
+                  <button type="submit" className="w-full bg-brand-orange text-white text-xs font-bold py-1.5 rounded-md">
+                    Apply Postcode
+                  </button>
+                  {postcodeError && <p className="text-[10px] text-red-500 font-medium">{postcodeError}</p>}
+                </form>
+              </div>
+            )}
+          </div>
+
+          <button
+            onClick={() => {
+              setIsOrdersOpen(true);
+              setIsCartOpen(false);
+            }}
+            className="flex items-center justify-center p-1.5 bg-slate-100 hover:bg-slate-200 rounded-full text-slate-700 relative cursor-pointer"
+            id="btn-customer-my-orders"
+            title="My Orders"
+          >
+            <ClipboardList className="w-4 h-4 text-brand-blue" />
+            {orders.length > 0 && (
+              <span className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-brand-orange text-white text-[8px] font-black rounded-full flex items-center justify-center border border-white">
+                {orders.length}
+              </span>
+            )}
+          </button>
         </div>
       </div>
 
@@ -1059,6 +1098,123 @@ export default function GoZoonCustomer({
               )}
 
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Slide-over My Orders History Drawer */}
+      {isOrdersOpen && (
+        <div className="absolute inset-0 bg-black/60 backdrop-blur-xs z-40 flex flex-col justify-end">
+          <div className="absolute inset-0" onClick={() => setIsOrdersOpen(false)}></div>
+          <div className="w-full bg-white rounded-t-2xl h-[92%] max-h-[92%] flex flex-col z-10 animate-in slide-in-from-bottom duration-300 text-xs">
+            
+            {/* Header */}
+            <div className="p-3.5 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-2xl shrink-0">
+              <div className="flex items-center gap-1.5 font-black text-slate-900 text-sm">
+                <ClipboardList className="w-4 h-4 text-brand-blue" />
+                <span>My Orders History</span>
+                <span className="bg-slate-200 text-slate-700 text-[9px] px-1.5 py-0.2 rounded-full font-bold">
+                  {orders.length} {orders.length === 1 ? 'order' : 'orders'}
+                </span>
+              </div>
+              <button 
+                onClick={() => setIsOrdersOpen(false)} 
+                className="text-xs font-bold text-slate-400 hover:text-slate-900 px-2 py-1 bg-slate-200/50 rounded-md cursor-pointer animate-in fade-in"
+              >
+                Close
+              </button>
+            </div>
+
+            {/* List Content */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              {orders.length === 0 ? (
+                <div className="h-64 flex flex-col items-center justify-center text-center space-y-3">
+                  <div className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center border border-slate-200 text-slate-400">
+                    <ClipboardList className="w-6 h-6" />
+                  </div>
+                  <div className="space-y-1">
+                    <h4 className="font-extrabold text-slate-800 text-xs">No orders yet</h4>
+                    <p className="text-[10px] text-slate-400 max-w-[200px]">Any meals you order through Go-Zoon will show up right here for fast tracking and reordering.</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {orders.map(order => {
+                    const isActive = order.status !== 'Delivered' && order.status !== 'Cancelled';
+                    return (
+                      <div key={order.id} className="bg-white rounded-xl border border-slate-150 p-3 space-y-3 shadow-xs">
+                        {/* Title Row */}
+                        <div className="flex justify-between items-start gap-1">
+                          <div className="space-y-0.5">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] font-bold text-slate-400 font-mono">#{order.id}</span>
+                              <span className="w-1 h-1 bg-slate-300 rounded-full"></span>
+                              <span className="text-[9px] font-semibold text-slate-400">
+                                {new Date(order.createdAt).toLocaleDateString()}
+                              </span>
+                            </div>
+                            <h4 className="font-extrabold text-slate-900 text-xs leading-tight">{order.restaurantName}</h4>
+                          </div>
+                          
+                          {/* Status Badge */}
+                          <span className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full ${
+                            order.status === 'Placed' ? 'bg-blue-100 text-blue-700' :
+                            order.status === 'Preparing' ? 'bg-amber-100 text-amber-700' :
+                            order.status === 'OutForDelivery' ? 'bg-orange-100 text-orange-700 animate-pulse' :
+                            order.status === 'Delivered' ? 'bg-emerald-100 text-emerald-700' :
+                            'bg-red-100 text-red-700'
+                          }`}>
+                            {order.status}
+                          </span>
+                        </div>
+
+                        {/* Items listed */}
+                        <div className="border-t border-slate-50 pt-2 space-y-1 font-semibold text-slate-600 text-[10px]">
+                          {order.items.map(item => (
+                            <div key={item.id} className="flex justify-between">
+                              <span>{item.quantity}x {item.menuItem.name}</span>
+                              <span className="text-slate-400">£{(item.menuItem.price * item.quantity).toFixed(2)}</span>
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Total price and actions */}
+                        <div className="border-t border-slate-100 pt-2 flex items-center justify-between gap-2">
+                          <div className="text-[10px] font-bold text-slate-900">
+                            <span>Paid: </span>
+                            <span className="font-extrabold text-xs text-slate-950">£{order.total.toFixed(2)}</span>
+                          </div>
+
+                          <div className="flex gap-1.5">
+                            {isActive ? (
+                              <button
+                                onClick={() => {
+                                  onSetActiveOrder(order.id);
+                                  setIsOrdersOpen(false);
+                                }}
+                                className="px-3 h-7 bg-brand-blue text-white rounded-lg font-bold text-[9px] flex items-center gap-1 hover:bg-brand-blue/90 animate-pulse shadow-sm cursor-pointer"
+                              >
+                                <History className="w-3 h-3" />
+                                <span>Track Live Status</span>
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => handleReorder(order)}
+                                className="px-3 h-7 bg-brand-orange text-white rounded-lg font-bold text-[9px] flex items-center gap-1 hover:bg-brand-orange/95 shadow-sm cursor-pointer"
+                              >
+                                <span>Reorder Items</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
           </div>
         </div>
       )}

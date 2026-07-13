@@ -20,10 +20,30 @@ export default function App(): React.JSX.Element {
     return saved ? JSON.parse(saved) : [];
   });
 
-  const [orders, setOrders] = useState<Order[]>(() => {
-    const saved = localStorage.getItem('gozoon_orders');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [orders, setOrders] = useState<Order[]>([]);
+
+  // Load and sync orders from PostgreSQL Database (Interval-based real-time sync across devices)
+  useEffect(() => {
+    const fetchOrders = () => {
+      fetch('/api/orders')
+        .then(res => res.json())
+        .then(data => {
+          if (data && data.orders) {
+            setOrders(data.orders);
+          }
+        })
+        .catch(err => {
+          console.error('[PostgreSQL] Failed to fetch orders:', err);
+        });
+    };
+
+    // Initial fetch
+    fetchOrders();
+
+    // Poll every 3 seconds for seamless cross-device sync
+    const interval = setInterval(fetchOrders, 3000);
+    return () => clearInterval(interval);
+  }, []);
 
   const [activeOrderId, setActiveOrderId] = useState<string | null>(() => {
     return localStorage.getItem('gozoon_active_order_id') || null;
@@ -67,6 +87,21 @@ export default function App(): React.JSX.Element {
   // Current Active workspace tab
   const [activeApp, setActiveApp] = useState<'customer' | 'business' | 'roadking' | 'admin'>('customer');
 
+  // Detect if url query contains app parameter (e.g. ?app=customer) for direct standalone phone view
+  const [standaloneApp, setStandaloneApp] = useState<'customer' | 'business' | 'roadking' | 'admin' | null>(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const appParam = params.get('app') || params.get('view');
+      if (appParam) {
+        const lower = appParam.toLowerCase();
+        if (['customer', 'business', 'roadking', 'admin'].includes(lower)) {
+          return lower as 'customer' | 'business' | 'roadking' | 'admin';
+        }
+      }
+    }
+    return null;
+  });
+
   // Customer sub-state
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState('All');
@@ -81,9 +116,7 @@ export default function App(): React.JSX.Element {
     localStorage.setItem('gozoon_cart', JSON.stringify(cart));
   }, [cart]);
 
-  useEffect(() => {
-    localStorage.setItem('gozoon_orders', JSON.stringify(orders));
-  }, [orders]);
+  // Synchronizing orders to localStorage is disabled because we now use Cloud SQL (PostgreSQL) directly.
 
   useEffect(() => {
     if (activeOrderId) {
@@ -226,16 +259,64 @@ export default function App(): React.JSX.Element {
       createdAt: new Date().toISOString()
     };
 
+    // Optimistically update local React state
     setOrders(prev => [newOrder, ...prev]);
     setActiveOrderId(orderId);
     setCart([]); // Reset basket
+
+    // Persist new order directly to Cloud SQL (PostgreSQL) in background
+    fetch('/api/orders', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(newOrder)
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.order) {
+          // Sync state with fully-parsed DB-backed record
+          setOrders(prev => prev.map(o => o.id === orderId ? data.order : o));
+          addPlatformLog(`POSTGRES_INSERT: Saved order #${orderId} directly to Google Cloud SQL "orders" table.`, 'success');
+        } else {
+          console.error('[PostgreSQL] Failed to insert order:', data);
+        }
+      })
+      .catch(err => {
+        console.error('[PostgreSQL] Network error on insert:', err);
+      });
 
     addPlatformLog(`STRIPE_PAYMENT_SUCCESS: £${total.toFixed(2)} captured on Card *4242 (Cardholder: ${cardName})`, 'success');
     addPlatformLog(`ORDER_PLACED: Order #${orderId} submitted to "${selectedRestaurant.name}"`, 'success');
   };
 
-  const handleUpdateOrderStatus = (orderId: string, status: OrderStatus) => {
-    setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status } : o));
+  const handleUpdateOrderStatus = (orderId: string, status: OrderStatus, customDriverName?: string, customDriverPhone?: string) => {
+    const existingOrder = orders.find(o => o.id === orderId);
+    const driverName = customDriverName !== undefined ? customDriverName : existingOrder?.driverName;
+    const driverPhone = customDriverPhone !== undefined ? customDriverPhone : existingOrder?.driverPhone;
+
+    // Optimistically update UI
+    setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status, driverName, driverPhone } : o));
+
+    // Update status in PostgreSQL Database
+    fetch(`/api/orders/${orderId}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ status, driverName, driverPhone })
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.order) {
+          // Sync with mapped PostgreSQL values
+          setOrders(prev => prev.map(o => o.id === orderId ? data.order : o));
+          addPlatformLog(`POSTGRES_UPDATE: Patched order #${orderId} status to "${status}" in Cloud SQL.`, 'success');
+        }
+      })
+      .catch(err => {
+        console.error('[PostgreSQL] Failed to patch status:', err);
+      });
   };
 
   const handleClearLogs = () => {
@@ -248,13 +329,106 @@ export default function App(): React.JSX.Element {
     setActiveOrderId(null);
     localStorage.removeItem('gozoon_orders');
     localStorage.removeItem('gozoon_active_order_id');
-    addPlatformLog('DB_FLUSH: Wiped all simulated active and historical order tables', 'warning');
+
+    // Flush PostgreSQL orders table
+    fetch('/api/orders', {
+      method: 'DELETE'
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          addPlatformLog('DB_FLUSH: Wiped all active and historical order records from Google Cloud SQL (PostgreSQL) database.', 'warning');
+        }
+      })
+      .catch(err => {
+        console.error('[PostgreSQL] Failed to flush database:', err);
+      });
   };
 
   // Glow Badges Calculations for Platform Workspace Switcher
   const unacceptedCount = orders.filter(o => o.status === 'Placed').length;
   const dispatchGigsCount = orders.filter(o => !o.driverName || o.status === 'Preparing' || o.status === 'OutForDelivery').length;
   const trackingActive = orders.some(o => o.id === activeOrderId && o.status !== 'Delivered' && o.status !== 'Cancelled');
+
+  if (standaloneApp) {
+    return (
+      <div className="w-full h-screen overflow-hidden bg-white select-none relative">
+        {standaloneApp === 'customer' && (
+          <GoZoonCustomer
+            restaurantsList={restaurantsList}
+            currentPostcode={currentPostcode}
+            onPostcodeChange={setCurrentPostcode}
+            cart={cart}
+            onAddToCart={handleAddToCart}
+            onUpdateCartQuantity={handleUpdateCartQuantity}
+            onRemoveCartItem={handleRemoveCartItem}
+            onCheckout={handleCheckout}
+            activeOrderId={activeOrderId}
+            onResetActiveOrder={() => setActiveOrderId(null)}
+            onSetActiveOrder={setActiveOrderId}
+            orders={orders}
+            closedRestaurants={closedRestaurants}
+            outOfStockItems={outOfStockItems}
+            searchQuery={searchQuery}
+            onSearchQueryChange={setSearchQuery}
+            activeFilter={activeFilter}
+            onFilterChange={setActiveFilter}
+            orderMode={orderMode}
+            onOrderModeChange={setOrderMode}
+          />
+        )}
+        {standaloneApp === 'business' && (
+          <GoZoonBusiness
+            orders={orders}
+            onUpdateOrderStatus={handleUpdateOrderStatus}
+            restaurantsList={restaurantsList}
+            closedRestaurants={closedRestaurants}
+            onToggleClosedRestaurant={handleToggleClosedRestaurant}
+            outOfStockItems={outOfStockItems}
+            onToggleOutOfStockItem={handleToggleOutOfStockItem}
+            onOnboardRestaurant={handleOnboardRestaurant}
+            onAddDishToRestaurant={handleAddDishToRestaurant}
+            onAddLog={addPlatformLog}
+          />
+        )}
+        {standaloneApp === 'roadking' && (
+          <GoZoonRoadKing
+            orders={orders}
+            onUpdateOrderStatus={handleUpdateOrderStatus}
+            drivers={drivers}
+            onOnboardDriver={handleOnboardDriver}
+            onAddLog={addPlatformLog}
+          />
+        )}
+        {standaloneApp === 'admin' && (
+          <div className="w-full h-full bg-slate-950 overflow-auto">
+            <GoZoonAdmin
+              orders={orders}
+              restaurantsList={restaurantsList}
+              drivers={drivers}
+              closedRestaurants={closedRestaurants}
+              outOfStockItems={outOfStockItems}
+              platformLogs={platformLogs}
+              onClearLogs={handleClearLogs}
+              onClearAllOrders={handleClearAllOrders}
+            />
+          </div>
+        )}
+        {/* Subtle floating toggle button to switch back to full Sandbox layout */}
+        <div className="absolute bottom-4 right-4 z-[9999]">
+          <button 
+            onClick={() => {
+              window.history.pushState({}, '', window.location.pathname);
+              setStandaloneApp(null);
+            }}
+            className="bg-slate-900/90 hover:bg-slate-900 text-white text-[11px] font-bold px-4 py-2 rounded-full shadow-2xl flex items-center gap-1.5 cursor-pointer transition-all border border-slate-700/80 active:scale-95"
+          >
+            <span>🔧 Switch to Sandbox Hub</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-slate-50 min-h-screen flex flex-col font-sans text-neutral-800">
@@ -388,7 +562,23 @@ export default function App(): React.JSX.Element {
               </p>
             </div>
 
-            {/* Spec 4: Live Testing Tips */}
+            {/* Spec 4: Standalone Mobile Testing */}
+            <div className="bg-blue-50 border border-blue-100 p-3 rounded-xl space-y-1">
+              <span className="font-extrabold text-[#073db7] text-[10px] uppercase tracking-wider block">📱 Test on Your iPhone / Mobile:</span>
+              <p className="text-[10px] text-blue-900 leading-normal">
+                To test a pristine, full-screen version of any app directly on your mobile device, open the URL and append the parameter:
+              </p>
+              <ul className="text-[9.5px] font-mono text-blue-950 space-y-1 bg-white/60 p-1.5 rounded-md border border-blue-100">
+                <li>• Customer App: <a href="?app=customer" className="text-[#073db7] font-bold underline hover:text-[#ff4a14]">?app=customer</a></li>
+                <li>• Business App: <a href="?app=business" className="text-[#073db7] font-bold underline hover:text-[#ff4a14]">?app=business</a></li>
+                <li>• Road King App: <a href="?app=roadking" className="text-[#073db7] font-bold underline hover:text-[#ff4a14]">?app=roadking</a></li>
+              </ul>
+              <p className="text-[9px] text-blue-800 italic">
+                Tip: You can use two devices (e.g. laptop & phone) to see live status syncing via PostgreSQL database!
+              </p>
+            </div>
+
+            {/* Spec 5: Live Testing Tips */}
             <div className="bg-orange-50 border border-orange-100 p-3 rounded-xl space-y-1">
               <span className="font-extrabold text-[#ff4a14] text-[10px] uppercase tracking-wider block">Sandbox Testing walkthrough:</span>
               <ol className="list-decimal list-inside text-[10px] text-orange-800 space-y-1 font-medium">
@@ -466,6 +656,7 @@ export default function App(): React.JSX.Element {
                       onCheckout={handleCheckout}
                       activeOrderId={activeOrderId}
                       onResetActiveOrder={() => setActiveOrderId(null)}
+                      onSetActiveOrder={setActiveOrderId}
                       orders={orders}
                       closedRestaurants={closedRestaurants}
                       outOfStockItems={outOfStockItems}

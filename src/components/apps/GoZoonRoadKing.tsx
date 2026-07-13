@@ -4,7 +4,7 @@ import { Order, OrderStatus } from '../../types';
 
 interface GoZoonRoadKingProps {
   orders: Order[];
-  onUpdateOrderStatus: (orderId: string, status: OrderStatus) => void;
+  onUpdateOrderStatus: (orderId: string, status: OrderStatus, driverName?: string, driverPhone?: string) => void;
   drivers: { name: string; phone: string; vehicle: string }[];
   onOnboardDriver: (driver: { name: string; phone: string; vehicle: string }) => void;
   onAddLog: (event: string, type: 'info' | 'success' | 'warning') => void;
@@ -63,9 +63,7 @@ export default function GoZoonRoadKing({
   // Handle accepting an open gig
   const handleAcceptGig = (orderId: string) => {
     // Assign driver name and phone to order
-    // In our simplified App.tsx handler, we update the status, but let's assign the driver
-    // We can do this by calling a custom action or we will just update status and let local tracking know
-    onUpdateOrderStatus(orderId, 'Preparing'); // keeps status as preparing but assigns
+    onUpdateOrderStatus(orderId, 'Preparing', selectedDriver.name, selectedDriver.phone);
     onAddLog(`DRIVER_ASSIGNED: Courier ${selectedDriver.name} accepted job for order #${orderId}`, 'info');
   };
 
