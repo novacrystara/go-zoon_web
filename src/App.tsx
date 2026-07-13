@@ -6,11 +6,17 @@ import GoZoonAdmin from './components/apps/GoZoonAdmin';
 
 import { UK_RESTAURANTS, UK_POSTCODES } from './data/restaurants';
 import { Restaurant, CartItem, Order, UKPostcodeZone, OrderStatus, MenuItem } from './types';
-import { Smartphone, Store, Bike, Landmark, Info, Sparkles, Server, ShieldCheck, CreditCard, Activity, Wifi, Battery } from 'lucide-react';
+import { Smartphone, Store, Bike, Landmark, Info, Sparkles, Server, ShieldCheck, CreditCard, Activity, Wifi, Battery, Settings } from 'lucide-react';
 
 // Define base API URL for native Capacitor or mobile device context
 const getApiUrl = (): string => {
   if (typeof window !== 'undefined') {
+    // If the developer/user has configured a specific target sync endpoint, respect it on all platforms!
+    const saved = localStorage.getItem('gozoon_backend_api_url');
+    if (saved) {
+      return saved;
+    }
+
     const isLocalOrNative = 
       window.location.protocol === 'file:' || 
       window.location.hostname === 'localhost' || 
@@ -19,7 +25,9 @@ const getApiUrl = (): string => {
       window.location.protocol.startsWith('ionic');
       
     if (isLocalOrNative) {
-      return localStorage.getItem('gozoon_backend_api_url') || 'https://ais-pre-ap557zrj3sovqxnvxsqzsf-651428129387.asia-east1.run.app';
+      // Xcode iOS Simulator / actual iPhone testing defaults to the local Mac backend server
+      // running on port 3000 to bypass sandboxed cookie/proxy authentication requirements of Cloud Run.
+      return 'http://localhost:3000';
     }
   }
   return '';
@@ -125,14 +133,36 @@ export default function App(): React.JSX.Element {
           return lower as 'customer' | 'business' | 'roadking' | 'admin';
         }
       }
-      // Packaged native builds have no URL query string to key off of;
-      // this Customer app target defaults straight into the customer view.
-      if (window.hasOwnProperty('Capacitor') || window.location.protocol === 'capacitor:') {
-        return 'customer';
-      }
     }
     return null;
   });
+
+  const [isDevSettingsOpen, setIsDevSettingsOpen] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+
+  const handleTestConnection = (url: string) => {
+    setTesting(true);
+    setTestResult('Connecting and pinging backend health endpoint...');
+    const targetUrl = url.replace(/\/$/, '');
+    fetch(`${targetUrl}/api/health`)
+      .then(res => res.json())
+      .then(data => {
+        if (data && data.postgres && data.postgres.working) {
+          setTestResult('✅ Success! Connected to your PostgreSQL Database successfully.');
+        } else if (data && data.postgres && !data.postgres.working) {
+          setTestResult(`⚠️ Connected to server, but PostgreSQL connection failed: ${data.postgres.error || 'Check database credentials.'}`);
+        } else {
+          setTestResult('✅ Server responded, but health metrics are unavailable.');
+        }
+      })
+      .catch(err => {
+        setTestResult(`❌ Network Connection Failed. Make sure your local server is running on ${targetUrl} (npm run dev) and is accessible.`);
+      })
+      .finally(() => {
+        setTesting(false);
+      });
+  };
 
   // Customer sub-state
   const [searchQuery, setSearchQuery] = useState('');
@@ -447,7 +477,18 @@ export default function App(): React.JSX.Element {
           </div>
         )}
         {/* Subtle floating toggle button to switch back to full Sandbox layout */}
-        <div className="absolute bottom-4 right-4 z-[9999]">
+        <div className="absolute bottom-4 right-4 z-[9999] flex gap-2">
+          <button 
+            onClick={() => {
+              setIsDevSettingsOpen(true);
+              setTestResult(null);
+            }}
+            className="bg-[#ff4a14] hover:bg-[#e03d0d] text-white text-[11px] font-black px-4 py-2 rounded-full shadow-2xl flex items-center gap-1.5 cursor-pointer transition-all border border-orange-500/30 active:scale-95 animate-pulse"
+          >
+            <Settings className="w-3.5 h-3.5" />
+            <span>Developer Sync</span>
+          </button>
+
           <button 
             onClick={() => {
               window.history.pushState({}, '', window.location.pathname);
@@ -458,6 +499,99 @@ export default function App(): React.JSX.Element {
             <span>🔧 Switch to Sandbox Hub</span>
           </button>
         </div>
+
+        {/* Developer Sync Gateway Overlay Modal */}
+        {isDevSettingsOpen && (
+          <div className="absolute inset-0 bg-slate-950/90 z-[99999] flex items-center justify-center p-5 select-text overflow-y-auto">
+            <div className="bg-slate-900 border border-slate-800 text-slate-100 p-6 rounded-2xl w-full max-w-sm space-y-4 shadow-2xl relative text-xs font-sans">
+              <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                <div className="flex items-center gap-1.5 font-black text-white text-sm">
+                  <Settings className="w-4 h-4 text-[#ff4a14]" />
+                  <span>Developer Sync Gateway</span>
+                </div>
+                <button 
+                  onClick={() => setIsDevSettingsOpen(false)}
+                  className="text-slate-400 hover:text-white font-bold text-sm cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="space-y-1">
+                <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider block">Diagnostics Context</span>
+                <p className="text-slate-300 leading-normal">
+                  Xcode simulator/actual iPhone cannot access sandboxed cookies of your Cloud Run URLs directly. 
+                  Connect to your local Mac backend running on port 3000 to save orders directly to your Postgres database.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-[10px] text-brand-orange uppercase font-extrabold tracking-wider">Backend API URL</label>
+                <input
+                  type="text"
+                  value={backendApiUrlInput}
+                  onChange={(e) => {
+                    setBackendApiUrlInput(e.target.value);
+                    localStorage.setItem('gozoon_backend_api_url', e.target.value);
+                  }}
+                  placeholder="http://localhost:3000"
+                  className="w-full text-xs px-3 py-2 bg-slate-950 border border-slate-850 rounded-lg text-white font-mono focus:border-[#ff4a14] focus:outline-none"
+                />
+              </div>
+
+              {/* Preset buttons */}
+              <div className="flex flex-wrap gap-1.5">
+                <button
+                  onClick={() => {
+                    const localUrl = 'http://localhost:3000';
+                    setBackendApiUrlInput(localUrl);
+                    localStorage.setItem('gozoon_backend_api_url', localUrl);
+                    setTestResult(null);
+                  }}
+                  className="px-2.5 py-1 bg-slate-950 border border-slate-800 hover:bg-slate-850 text-slate-300 hover:text-white rounded-md text-[10px] font-bold cursor-pointer"
+                >
+                  💻 Localhost (Simulator)
+                </button>
+                <button
+                  onClick={() => {
+                    const preUrl = 'https://ais-pre-ap557zrj3sovqxnvxsqzsf-651428129387.asia-east1.run.app';
+                    setBackendApiUrlInput(preUrl);
+                    localStorage.setItem('gozoon_backend_api_url', preUrl);
+                    setTestResult(null);
+                  }}
+                  className="px-2.5 py-1 bg-slate-950 border border-slate-800 hover:bg-slate-850 text-slate-300 hover:text-white rounded-md text-[10px] font-bold cursor-pointer"
+                >
+                  ☁️ Shared Cloud
+                </button>
+              </div>
+
+              <div className="pt-2 flex gap-2">
+                <button
+                  onClick={() => handleTestConnection(backendApiUrlInput)}
+                  disabled={testing}
+                  className="flex-1 py-2 bg-[#ff4a14] hover:bg-[#e03d0d] text-white font-bold rounded-lg text-xs cursor-pointer shadow-md flex items-center justify-center gap-1.5 disabled:opacity-50"
+                >
+                  <span>{testing ? 'Testing...' : '🔌 Ping & Test Connection'}</span>
+                </button>
+              </div>
+
+              {testResult && (
+                <div className="p-3 bg-slate-950 rounded-lg border border-slate-800 text-[10.5px] leading-relaxed font-mono whitespace-pre-line text-slate-300">
+                  {testResult}
+                </div>
+              )}
+
+              <div className="pt-2 text-center border-t border-slate-800">
+                <button
+                  onClick={() => setIsDevSettingsOpen(false)}
+                  className="w-full py-2 bg-slate-800 hover:bg-slate-750 text-white font-bold rounded-lg text-xs cursor-pointer"
+                >
+                  Close & Apply Settings
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }

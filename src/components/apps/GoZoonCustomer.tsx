@@ -663,7 +663,7 @@ export default function GoZoonCustomer({
                 placeholder="Search cod, roasts, curries..."
                 value={searchQuery}
                 onChange={(e) => onSearchQueryChange(e.target.value)}
-                className="w-full h-9 pl-9 pr-3 bg-slate-100 hover:bg-slate-200/80 rounded-lg text-xs outline-hidden focus:bg-white focus:ring-1 focus:ring-brand-blue"
+                className="w-full h-9 pl-9 pr-3 bg-slate-100 hover:bg-slate-200/80 rounded-lg text-[16px] outline-hidden focus:bg-white focus:ring-1 focus:ring-brand-blue"
               />
               <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
             </div>
@@ -841,7 +841,7 @@ export default function GoZoonCustomer({
                 placeholder="e.g. no vinegar, extra sauce on side, etc."
                 value={customizationNotes}
                 onChange={(e) => setCustomizationNotes(e.target.value)}
-                className="w-full h-8 px-2.5 border border-slate-200 rounded-lg text-xs"
+                className="w-full h-8 px-2.5 border border-slate-200 rounded-lg text-[16px]"
               />
             </div>
 
