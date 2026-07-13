@@ -379,7 +379,7 @@ export default function GoZoonCustomer({
                     value={postcodeInput}
                     onChange={(e) => setPostcodeInput(e.target.value)}
                     placeholder="e.g. SW1A 1AA"
-                    className="w-full text-xs px-2 py-1.5 border border-slate-300 rounded-md uppercase"
+                    className="w-full text-[16px] px-2 py-1.5 border border-slate-300 rounded-md uppercase"
                   />
                   <button type="submit" className="w-full bg-brand-orange text-white text-xs font-bold py-1.5 rounded-md">
                     Apply Postcode
@@ -987,7 +987,7 @@ export default function GoZoonCustomer({
                         required
                         value={deliveryAddress}
                         onChange={(e) => setDeliveryAddress(e.target.value)}
-                        className="w-full h-8 px-2.5 border border-slate-250 rounded-md bg-slate-50 text-xs"
+                        className="w-full h-9 px-2.5 border border-slate-250 rounded-md bg-slate-50 text-[16px]"
                       />
                     </div>
 
@@ -999,7 +999,7 @@ export default function GoZoonCustomer({
                         placeholder="John Doe"
                         value={stripeCardName}
                         onChange={(e) => setStripeCardName(e.target.value)}
-                        className="w-full h-8 px-2.5 border border-slate-250 rounded-md text-xs uppercase"
+                        className="w-full h-9 px-2.5 border border-slate-250 rounded-md text-[16px] uppercase"
                       />
                     </div>
 
@@ -1027,7 +1027,7 @@ export default function GoZoonCustomer({
                               setStripeCardNum(val);
                             }
                           }}
-                          className="w-full h-8 pl-8 pr-3 border border-slate-250 rounded-md text-xs font-mono"
+                          className="w-full h-9 pl-8 pr-3 border border-slate-250 rounded-md text-[16px] font-mono"
                         />
                         <CreditCard className="absolute left-2.5 top-2.5 w-4 h-4 text-slate-400" />
                       </div>
@@ -1049,7 +1049,7 @@ export default function GoZoonCustomer({
                             }
                             setStripeCardExpiry(val);
                           }}
-                          className="w-full h-8 px-2.5 border border-slate-250 rounded-md text-xs font-mono"
+                          className="w-full h-9 px-2.5 border border-slate-250 rounded-md text-[16px] font-mono"
                         />
                       </div>
                       <div>
@@ -1061,7 +1061,7 @@ export default function GoZoonCustomer({
                           maxLength={3}
                           value={stripeCardCvc}
                           onChange={(e) => setStripeCardCvc(e.target.value.replace(/\D/g, ''))}
-                          className="w-full h-8 px-2.5 border border-slate-250 rounded-md text-xs font-mono"
+                          className="w-full h-9 px-2.5 border border-slate-250 rounded-md text-[16px] font-mono"
                         />
                       </div>
                     </div>

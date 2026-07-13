@@ -19,7 +19,7 @@ const getApiUrl = (): string => {
       window.location.protocol.startsWith('ionic');
       
     if (isLocalOrNative) {
-      return localStorage.getItem('gozoon_backend_api_url') || 'https://ais-dev-ap557zrj3sovqxnvxsqzsf-651428129387.asia-east1.run.app';
+      return localStorage.getItem('gozoon_backend_api_url') || 'https://ais-pre-ap557zrj3sovqxnvxsqzsf-651428129387.asia-east1.run.app';
     }
   }
   return '';
@@ -34,7 +34,7 @@ const fetchApi = (endpoint: string, options?: RequestInit) => {
 export default function App(): React.JSX.Element {
   // 1. Core State Synchronization (LocalStorage Keys with Rebranded Gozoon prefixes)
   const [backendApiUrlInput, setBackendApiUrlInput] = useState<string>(() => {
-    return localStorage.getItem('gozoon_backend_api_url') || 'https://ais-dev-ap557zrj3sovqxnvxsqzsf-651428129387.asia-east1.run.app';
+    return localStorage.getItem('gozoon_backend_api_url') || 'https://ais-pre-ap557zrj3sovqxnvxsqzsf-651428129387.asia-east1.run.app';
   });
 
   const [currentPostcode, setCurrentPostcode] = useState<UKPostcodeZone>(() => {
@@ -625,7 +625,7 @@ export default function App(): React.JSX.Element {
                 <span>Capacitor Mobile API Sync:</span>
               </span>
               <p className="text-[10px] text-slate-300 leading-normal">
-                When running inside the iOS Simulator or on an actual iPhone, the app uses an absolute URL to connect to the Google Cloud backend.
+                iOS Simulator / actual iPhone MUST use the public **Shared App URL (ais-pre)** to sync. The development URL (ais-dev) is protected by cookie-based login and will block external API requests.
               </p>
               <div>
                 <label className="block text-[8px] font-bold text-slate-400 uppercase mb-1">Backend API Endpoint:</label>
@@ -643,8 +643,8 @@ export default function App(): React.JSX.Element {
                   <button
                     onClick={() => {
                       localStorage.removeItem('gozoon_backend_api_url');
-                      setBackendApiUrlInput('https://ais-dev-ap557zrj3sovqxnvxsqzsf-651428129387.asia-east1.run.app');
-                      alert('Reset to default dev container!');
+                      setBackendApiUrlInput('https://ais-pre-ap557zrj3sovqxnvxsqzsf-651428129387.asia-east1.run.app');
+                      alert('Reset to default public Shared App URL!');
                     }}
                     className="px-2 py-1 bg-slate-800 hover:bg-slate-750 text-slate-400 hover:text-white rounded-md text-[9px] font-bold border border-slate-700 cursor-pointer shrink-0"
                     title="Reset to Default"
@@ -654,7 +654,7 @@ export default function App(): React.JSX.Element {
                 </div>
               </div>
               <p className="text-[9px] text-slate-400 italic">
-                Tip: Keep this aligned with your active development server URL!
+                Active Shared URL: https://ais-pre-ap557zrj3sovqxnvxsqzsf-651428129387.asia-east1.run.app
               </p>
             </div>
 
