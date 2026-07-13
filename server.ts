@@ -1,4 +1,5 @@
 import express from 'express';
+import cors from 'cors';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { Pool } from 'pg';
@@ -245,6 +246,13 @@ async function startServer() {
   const PORT = 3000;
 
   app.use(express.json());
+
+  // Enable CORS for native Capacitor webviews and direct API access
+  app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+  }));
 
   // Bootstrap Postgres database
   await bootstrapPostgres();

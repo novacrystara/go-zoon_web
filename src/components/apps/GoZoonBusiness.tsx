@@ -224,7 +224,7 @@ export default function GoZoonBusiness({
     <div className="h-full bg-slate-900 flex flex-col overflow-y-auto no-scrollbar text-slate-100 font-sans select-none" id="business-app-view">
       
       {/* Top Banner: Profile Selector */}
-      <div className="bg-slate-950 p-4 border-b border-slate-800 space-y-3 flex-shrink-0 sticky top-0 z-30 shadow-md">
+      <div className="bg-slate-950 px-4 pb-4 pt-4 pt-safe border-b border-slate-800 space-y-3 flex-shrink-0 sticky top-0 z-30 shadow-md">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5">
             <Store className="w-4 h-4 text-brand-orange" />

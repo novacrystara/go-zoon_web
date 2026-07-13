@@ -8,8 +8,35 @@ import { UK_RESTAURANTS, UK_POSTCODES } from './data/restaurants';
 import { Restaurant, CartItem, Order, UKPostcodeZone, OrderStatus, MenuItem } from './types';
 import { Smartphone, Store, Bike, Landmark, Info, Sparkles, Server, ShieldCheck, CreditCard, Activity, Wifi, Battery } from 'lucide-react';
 
+// Define base API URL for native Capacitor or mobile device context
+const getApiUrl = (): string => {
+  if (typeof window !== 'undefined') {
+    const isLocalOrNative = 
+      window.location.protocol === 'file:' || 
+      window.location.hostname === 'localhost' || 
+      window.location.hostname === '127.0.0.1' ||
+      window.location.protocol.startsWith('capacitor') ||
+      window.location.protocol.startsWith('ionic');
+      
+    if (isLocalOrNative) {
+      return localStorage.getItem('gozoon_backend_api_url') || 'https://ais-dev-ap557zrj3sovqxnvxsqzsf-651428129387.asia-east1.run.app';
+    }
+  }
+  return '';
+};
+
+const fetchApi = (endpoint: string, options?: RequestInit) => {
+  const baseUrl = getApiUrl();
+  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  return fetch(`${baseUrl}${cleanEndpoint}`, options);
+};
+
 export default function App(): React.JSX.Element {
   // 1. Core State Synchronization (LocalStorage Keys with Rebranded Gozoon prefixes)
+  const [backendApiUrlInput, setBackendApiUrlInput] = useState<string>(() => {
+    return localStorage.getItem('gozoon_backend_api_url') || 'https://ais-dev-ap557zrj3sovqxnvxsqzsf-651428129387.asia-east1.run.app';
+  });
+
   const [currentPostcode, setCurrentPostcode] = useState<UKPostcodeZone>(() => {
     const saved = localStorage.getItem('gozoon_postcode');
     return saved ? JSON.parse(saved) : UK_POSTCODES[0];
@@ -25,7 +52,7 @@ export default function App(): React.JSX.Element {
   // Load and sync orders from PostgreSQL Database (Interval-based real-time sync across devices)
   useEffect(() => {
     const fetchOrders = () => {
-      fetch('/api/orders')
+      fetchApi('/api/orders')
         .then(res => res.json())
         .then(data => {
           if (data && data.orders) {
@@ -265,7 +292,7 @@ export default function App(): React.JSX.Element {
     setCart([]); // Reset basket
 
     // Persist new order directly to Cloud SQL (PostgreSQL) in background
-    fetch('/api/orders', {
+    fetchApi('/api/orders', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -299,7 +326,7 @@ export default function App(): React.JSX.Element {
     setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status, driverName, driverPhone } : o));
 
     // Update status in PostgreSQL Database
-    fetch(`/api/orders/${orderId}`, {
+    fetchApi(`/api/orders/${orderId}`, {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json'
@@ -331,7 +358,7 @@ export default function App(): React.JSX.Element {
     localStorage.removeItem('gozoon_active_order_id');
 
     // Flush PostgreSQL orders table
-    fetch('/api/orders', {
+    fetchApi('/api/orders', {
       method: 'DELETE'
     })
       .then(res => res.json())
@@ -589,6 +616,46 @@ export default function App(): React.JSX.Element {
                 <li>Switch to Road King, accept job</li>
                 <li>Auto-drive GPS and deliver food!</li>
               </ol>
+            </div>
+
+            {/* Spec 6: Capacitor Mobile API Sync Gateway */}
+            <div className="bg-slate-900 text-white p-3.5 rounded-xl space-y-2 border border-slate-800">
+              <span className="font-extrabold text-[#ff4a14] text-[10px] uppercase tracking-wider block flex items-center gap-1">
+                <Wifi className="w-3.5 h-3.5" />
+                <span>Capacitor Mobile API Sync:</span>
+              </span>
+              <p className="text-[10px] text-slate-300 leading-normal">
+                When running inside the iOS Simulator or on an actual iPhone, the app uses an absolute URL to connect to the Google Cloud backend.
+              </p>
+              <div>
+                <label className="block text-[8px] font-bold text-slate-400 uppercase mb-1">Backend API Endpoint:</label>
+                <div className="flex gap-1">
+                  <input
+                    type="text"
+                    value={backendApiUrlInput}
+                    onChange={(e) => {
+                      setBackendApiUrlInput(e.target.value);
+                      localStorage.setItem('gozoon_backend_api_url', e.target.value);
+                    }}
+                    placeholder="https://..."
+                    className="flex-1 text-[10px] px-2 py-1 bg-slate-800 border border-slate-700 rounded-md text-white font-mono min-w-0"
+                  />
+                  <button
+                    onClick={() => {
+                      localStorage.removeItem('gozoon_backend_api_url');
+                      setBackendApiUrlInput('https://ais-dev-ap557zrj3sovqxnvxsqzsf-651428129387.asia-east1.run.app');
+                      alert('Reset to default dev container!');
+                    }}
+                    className="px-2 py-1 bg-slate-800 hover:bg-slate-750 text-slate-400 hover:text-white rounded-md text-[9px] font-bold border border-slate-700 cursor-pointer shrink-0"
+                    title="Reset to Default"
+                  >
+                    Reset
+                  </button>
+                </div>
+              </div>
+              <p className="text-[9px] text-slate-400 italic">
+                Tip: Keep this aligned with your active development server URL!
+              </p>
             </div>
 
           </div>

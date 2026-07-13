@@ -129,7 +129,7 @@ export default function GoZoonRoadKing({
     <div className="h-full bg-stone-900 flex flex-col overflow-y-auto no-scrollbar text-stone-100 font-sans select-none" id="road-king-view">
       
       {/* 1. Header with Rider Selector */}
-      <div className="bg-stone-950 p-4 border-b border-stone-800 space-y-3 flex-shrink-0 sticky top-0 z-30 shadow-md">
+      <div className="bg-stone-950 px-4 pb-4 pt-4 pt-safe border-b border-stone-800 space-y-3 flex-shrink-0 sticky top-0 z-30 shadow-md">
         <div className="flex justify-between items-center">
           <div className="flex items-center gap-1.5">
             <Compass className="w-4.5 h-4.5 text-orange-500 animate-spin" />

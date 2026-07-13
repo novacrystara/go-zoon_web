@@ -353,7 +353,7 @@ export default function GoZoonCustomer({
     <div className="h-full bg-slate-50 flex flex-col overflow-y-auto no-scrollbar relative text-neutral-800 font-sans select-none" id="customer-phone-view">
       
       {/* 1. Header with Postcode */}
-      <div className="bg-white border-b border-gray-150 px-4 py-3 flex-shrink-0 sticky top-0 z-30 flex items-center justify-between gap-2 shadow-xs">
+      <div className="bg-white border-b border-gray-150 px-4 pb-3 pt-3 pt-safe flex-shrink-0 sticky top-0 z-30 flex items-center justify-between gap-2 shadow-xs">
         <div className="flex items-center gap-1.5">
           <div className="w-2.5 h-2.5 rounded-full bg-brand-orange animate-pulse"></div>
           <span className="font-extrabold text-brand-blue text-sm">Go-Zoon</span>
@@ -534,7 +534,8 @@ export default function GoZoonCustomer({
             <div className="absolute inset-0 bg-black/35"></div>
             <button
               onClick={() => setSelectedRestaurant(null)}
-              className="absolute top-3 left-3 w-8 h-8 rounded-full bg-white/95 backdrop-blur-md flex items-center justify-center shadow-md hover:bg-white cursor-pointer"
+              className="absolute left-3 w-8 h-8 rounded-full bg-white/95 backdrop-blur-md flex items-center justify-center shadow-md hover:bg-white cursor-pointer"
+              style={{ top: 'calc(env(safe-area-inset-top, 0px) + 12px)' }}
             >
               <ChevronLeft className="w-5 h-5 text-slate-800" />
             </button>
