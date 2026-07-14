@@ -1,0 +1,6 @@
+{
+  "name": "Go-Zoon",
+  "description": "Go-Zoon - Premium UK Food Delivery Marketplace. Onboard local restaurants, join as a delivery partner, and order gourmet meals with custom postcode-based delivery fees and real-time simulator tracking.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
