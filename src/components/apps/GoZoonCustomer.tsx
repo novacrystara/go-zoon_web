@@ -562,8 +562,7 @@ export default function GoZoonCustomer({
             <div className="absolute inset-0 bg-black/35"></div>
             <button
               onClick={() => setSelectedRestaurant(null)}
-              className="absolute left-3 w-8 h-8 rounded-full bg-white/95 backdrop-blur-md flex items-center justify-center shadow-md hover:bg-white cursor-pointer"
-              style={{ top: 'calc(env(safe-area-inset-top, 0px) + 12px)' }}
+              className="absolute left-3 top-3 w-8 h-8 rounded-full bg-white/95 backdrop-blur-md flex items-center justify-center shadow-md hover:bg-white cursor-pointer"
             >
               <ChevronLeft className="w-5 h-5 text-slate-800" />
             </button>
