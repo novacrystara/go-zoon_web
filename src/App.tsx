@@ -7,40 +7,24 @@ import GoZoonAdmin from './components/apps/GoZoonAdmin';
 import { UK_RESTAURANTS, UK_POSTCODES } from './data/restaurants';
 import { Restaurant, CartItem, Order, UKPostcodeZone, OrderStatus, MenuItem } from './types';
 import { Smartphone, Store, Bike, Landmark, Info, Sparkles, Server, ShieldCheck, CreditCard, Activity, Wifi, Battery, Settings } from 'lucide-react';
-
-// Define base API URL for native Capacitor or mobile device context
-const getApiUrl = (): string => {
-  if (typeof window !== 'undefined') {
-    // If the developer/user has configured a specific target sync endpoint, respect it on all platforms!
-    const saved = localStorage.getItem('gozoon_backend_api_url');
-    if (saved) {
-      return saved;
-    }
-
-    const isLocalOrNative = 
-      window.location.protocol === 'file:' || 
-      window.location.hostname === 'localhost' || 
-      window.location.hostname === '127.0.0.1' ||
-      window.location.protocol.startsWith('capacitor') ||
-      window.location.protocol.startsWith('ionic');
-      
-    if (isLocalOrNative) {
-      return 'https://go-zoon.ai.studio';
-    }
-  }
-  return '';
-};
-
-const fetchApi = (endpoint: string, options?: RequestInit) => {
-  const baseUrl = getApiUrl();
-  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
-  return fetch(`${baseUrl}${cleanEndpoint}`, options);
-};
+import { getApiUrl, fetchApi } from './api';
 
 export default function App(): React.JSX.Element {
   // 1. Core State Synchronization (LocalStorage Keys with Rebranded Gozoon prefixes)
   const [backendApiUrlInput, setBackendApiUrlInput] = useState<string>(() => {
     return localStorage.getItem('gozoon_backend_api_url') || 'https://ais-pre-ap557zrj3sovqxnvxsqzsf-651428129387.asia-east1.run.app';
+  });
+
+  // Anonymous per-device customer identity so "My Orders" only shows this
+  // customer's own orders instead of every order in the system. Not a real
+  // account/login system - just enough to stop the app leaking every
+  // customer's order history to every other customer.
+  const [customerId] = useState<string>(() => {
+    const saved = localStorage.getItem('gozoon_customer_id');
+    if (saved) return saved;
+    const generated = crypto.randomUUID();
+    localStorage.setItem('gozoon_customer_id', generated);
+    return generated;
   });
 
   const [currentPostcode, setCurrentPostcode] = useState<UKPostcodeZone>(() => {
@@ -54,29 +38,6 @@ export default function App(): React.JSX.Element {
   });
 
   const [orders, setOrders] = useState<Order[]>([]);
-
-  // Load and sync orders from PostgreSQL Database (Interval-based real-time sync across devices)
-  useEffect(() => {
-    const fetchOrders = () => {
-      fetchApi('/api/orders')
-        .then(res => res.json())
-        .then(data => {
-          if (data && data.orders) {
-            setOrders(data.orders);
-          }
-        })
-        .catch(err => {
-          console.error('[PostgreSQL] Failed to fetch orders:', err);
-        });
-    };
-
-    // Initial fetch
-    fetchOrders();
-
-    // Poll every 3 seconds for seamless cross-device sync
-    const interval = setInterval(fetchOrders, 3000);
-    return () => clearInterval(interval);
-  }, []);
 
   const [activeOrderId, setActiveOrderId] = useState<string | null>(() => {
     return localStorage.getItem('gozoon_active_order_id') || null;
@@ -139,6 +100,65 @@ export default function App(): React.JSX.Element {
     }
     return null;
   });
+
+  // Load and sync orders from PostgreSQL Database (Interval-based real-time sync across devices).
+  // The dedicated customer app scopes to this device's own orders only; the sandbox
+  // hub / business / road king / admin views need visibility across all orders to operate.
+  useEffect(() => {
+    const fetchOrders = () => {
+      const query = standaloneApp === 'customer' ? `?customerId=${encodeURIComponent(customerId)}` : '';
+      fetchApi(`/api/orders${query}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data && data.orders) {
+            setOrders(data.orders);
+          }
+        })
+        .catch(err => {
+          console.error('[PostgreSQL] Failed to fetch orders:', err);
+        });
+    };
+
+    // Initial fetch
+    fetchOrders();
+
+    // Poll every 3 seconds for seamless cross-device sync
+    const interval = setInterval(fetchOrders, 3000);
+    return () => clearInterval(interval);
+  }, [standaloneApp, customerId]);
+
+  // Load the shared restaurant catalog + closed/out-of-stock business state from the
+  // backend so a merchant's changes are visible to every customer's device, not just
+  // trapped in that one browser's localStorage. localStorage stays as an offline cache.
+  useEffect(() => {
+    const fetchRestaurantState = () => {
+      fetchApi('/api/restaurants')
+        .then(res => res.json())
+        .then(data => {
+          if (data?.restaurants) setRestaurantsList(data.restaurants);
+          if (data?.closedRestaurants) setClosedRestaurants(data.closedRestaurants);
+          if (data?.outOfStockItems) setOutOfStockItems(data.outOfStockItems);
+        })
+        .catch(err => {
+          console.error('[Restaurants] Failed to fetch shared catalog/business state:', err);
+        });
+    };
+    fetchRestaurantState();
+    const interval = setInterval(fetchRestaurantState, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Load the shared driver roster from the backend (same rationale as above).
+  useEffect(() => {
+    fetchApi('/api/drivers')
+      .then(res => res.json())
+      .then(data => {
+        if (data?.drivers && data.drivers.length > 0) setDrivers(data.drivers);
+      })
+      .catch(err => {
+        console.error('[Drivers] Failed to fetch shared driver roster:', err);
+      });
+  }, []);
 
   const [isDevSettingsOpen, setIsDevSettingsOpen] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
@@ -217,28 +237,32 @@ export default function App(): React.JSX.Element {
     });
   };
 
-  // State handlers
+  // State handlers - each applies an optimistic local update, then persists to the
+  // shared backend so the change is visible to every customer/device, not just this one.
   const handleToggleClosedRestaurant = (id: string) => {
-    setClosedRestaurants(prev => {
-      const isClosed = prev.includes(id);
-      const updated = isClosed ? prev.filter(item => item !== id) : [...prev, id];
-      const restName = restaurantsList.find(r => r.id === id)?.name || 'Merchant';
-      addPlatformLog(`MERCHANT_STATUS: "${restName}" is now ${isClosed ? 'ONLINE (Open)' : 'OFFLINE (Closed)'}`, 'warning');
-      return updated;
-    });
+    const isClosed = closedRestaurants.includes(id);
+    const restName = restaurantsList.find(r => r.id === id)?.name || 'Merchant';
+    setClosedRestaurants(prev => isClosed ? prev.filter(item => item !== id) : [...prev, id]);
+    addPlatformLog(`MERCHANT_STATUS: "${restName}" is now ${isClosed ? 'ONLINE (Open)' : 'OFFLINE (Closed)'}`, 'warning');
+    fetchApi(`/api/restaurants/${id}/toggle-closed`, { method: 'POST' })
+      .catch(err => console.error('[Restaurants] Failed to sync closed status:', err));
   };
 
   const handleToggleOutOfStockItem = (id: string) => {
-    setOutOfStockItems(prev => {
-      const isOut = prev.includes(id);
-      const updated = isOut ? prev.filter(item => item !== id) : [...prev, id];
-      addPlatformLog(`STOCK_STATUS: Menu Item ${id} toggled ${isOut ? 'IN STOCK' : 'OUT OF STOCK'}`, 'info');
-      return updated;
-    });
+    const isOut = outOfStockItems.includes(id);
+    setOutOfStockItems(prev => isOut ? prev.filter(item => item !== id) : [...prev, id]);
+    addPlatformLog(`STOCK_STATUS: Menu Item ${id} toggled ${isOut ? 'IN STOCK' : 'OUT OF STOCK'}`, 'info');
+    fetchApi(`/api/menu-items/${id}/toggle-stock`, { method: 'POST' })
+      .catch(err => console.error('[Restaurants] Failed to sync stock status:', err));
   };
 
   const handleOnboardRestaurant = (newRestaurant: Restaurant) => {
     setRestaurantsList(prev => [newRestaurant, ...prev]);
+    fetchApi('/api/restaurants', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newRestaurant)
+    }).catch(err => console.error('[Restaurants] Failed to persist onboarded restaurant:', err));
   };
 
   const handleAddDishToRestaurant = (restaurantId: string, menuItem: MenuItem) => {
@@ -252,10 +276,20 @@ export default function App(): React.JSX.Element {
       return r;
     }));
     addPlatformLog(`MENU_ADD_DISH: Added dish "${menuItem.name}" to menu`, 'success');
+    fetchApi(`/api/restaurants/${restaurantId}/menu`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(menuItem)
+    }).catch(err => console.error('[Restaurants] Failed to persist new dish:', err));
   };
 
   const handleOnboardDriver = (newDriver: { name: string; phone: string; vehicle: string }) => {
     setDrivers(prev => [...prev, newDriver]);
+    fetchApi('/api/drivers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newDriver)
+    }).catch(err => console.error('[Drivers] Failed to persist onboarded driver:', err));
   };
 
   const handleAddToCart = (newItem: CartItem) => {
@@ -286,11 +320,15 @@ export default function App(): React.JSX.Element {
     addPlatformLog(`CART_REMOVE: Removed cart item ${cartId} from basket`, 'info');
   };
 
-  const handleCheckout = (address: string, postcode: string, cardName: string) => {
-    const selectedRestaurantId = cart[0]?.menuItem.id.split('-')[0] || '';
-    const selectedRestaurant = restaurantsList.find(r => r.id === selectedRestaurantId) || restaurantsList[0];
+  // Places the order and waits for the server to confirm it was actually saved before
+  // touching the cart/UI state - previously the cart was cleared and an "active order"
+  // shown optimistically even if the backend write failed, silently losing the order.
+  const handleCheckout = async (address: string, postcode: string, cardName: string, restaurantId: string): Promise<{ success: boolean; error?: string }> => {
+    const selectedRestaurant = restaurantsList.find(r => r.id === restaurantId);
+    if (!selectedRestaurant) {
+      return { success: false, error: 'Could not identify the restaurant for this basket. Please reopen the restaurant and try again.' };
+    }
 
-    // Subtotal
     const subtotal = cart.reduce((acc, item) => {
       const customizationsCost = item.customizations.reduce((sum, c) => sum + c.additionalPrice, 0);
       return acc + (item.menuItem.price + customizationsCost) * item.quantity;
@@ -303,56 +341,58 @@ export default function App(): React.JSX.Element {
     // Pick rider from current online riders pool
     const assignedRider = drivers[Math.floor(Math.random() * drivers.length)] || drivers[0];
 
-    const orderId = Math.random().toString(36).substr(2, 6).toUpperCase();
-
-    const newOrder: Order = {
-      id: orderId,
+    const orderPayload = {
+      customerId,
       restaurantId: selectedRestaurant.id,
       restaurantName: selectedRestaurant.name,
       restaurantAddress: selectedRestaurant.address,
-      items: [...cart],
+      items: cart,
       subtotal,
       deliveryFee: delFee,
       serviceFee: sFee,
+      // NOT LEGALLY REVIEWED: flat 20% VAT on subtotal is a placeholder. UK hot-food
+      // takeaway VAT treatment is nuanced (zero-rated cold food, standard-rated hot
+      // food, delivery fee treatment) - needs finance/legal sign-off before launch.
       vat: Math.round(subtotal * 0.2 * 100) / 100,
       total,
       status: 'Placed',
       deliveryAddress: address,
       deliveryPostcode: postcode,
-      driverName: assignedRider.name,
-      driverPhone: assignedRider.phone,
-      createdAt: new Date().toISOString()
+      driverName: assignedRider?.name,
+      driverPhone: assignedRider?.phone,
     };
 
-    // Optimistically update local React state
-    setOrders(prev => [newOrder, ...prev]);
-    setActiveOrderId(orderId);
-    setCart([]); // Reset basket
-
-    // Persist new order directly to Cloud SQL (PostgreSQL) in background
-    fetchApi('/api/orders', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(newOrder)
-    })
-      .then(res => res.json())
-      .then(data => {
-        if (data.success && data.order) {
-          // Sync state with fully-parsed DB-backed record
-          setOrders(prev => prev.map(o => o.id === orderId ? data.order : o));
-          addPlatformLog(`POSTGRES_INSERT: Saved order #${orderId} directly to Google Cloud SQL "orders" table.`, 'success');
-        } else {
-          console.error('[PostgreSQL] Failed to insert order:', data);
-        }
-      })
-      .catch(err => {
-        console.error('[PostgreSQL] Network error on insert:', err);
+    try {
+      const res = await fetchApi('/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(orderPayload)
       });
+      const data = await res.json();
 
-    addPlatformLog(`STRIPE_PAYMENT_SUCCESS: £${total.toFixed(2)} captured on Card *4242 (Cardholder: ${cardName})`, 'success');
-    addPlatformLog(`ORDER_PLACED: Order #${orderId} submitted to "${selectedRestaurant.name}"`, 'success');
+      if (!res.ok || !data.success || !data.order) {
+        addPlatformLog(`ORDER_FAILED: Checkout rejected - ${data.error || 'unknown server error'}`, 'warning');
+        return { success: false, error: data.error || 'The order could not be saved. Please try again.' };
+      }
+
+      // Only now that the order is confirmed saved do we touch cart/order state.
+      setOrders(prev => [data.order, ...prev]);
+      setActiveOrderId(data.order.id);
+      setCart([]);
+
+      addPlatformLog(`STRIPE_PAYMENT_SUCCESS: £${total.toFixed(2)} captured on Card *4242 (Cardholder: ${cardName})`, 'success');
+      addPlatformLog(`ORDER_PLACED: Order #${data.order.id} submitted to "${selectedRestaurant.name}"`, 'success');
+      return { success: true };
+    } catch (err) {
+      console.error('[PostgreSQL] Network error on insert:', err);
+      return { success: false, error: 'Network error while placing your order. Please check your connection and try again.' };
+    }
+  };
+
+  // Lets a customer cancel an order that hasn't been accepted by the restaurant yet.
+  const handleCancelOrder = (orderId: string) => {
+    handleUpdateOrderStatus(orderId, 'Cancelled');
+    addPlatformLog(`ORDER_CANCELLED: Customer cancelled order #${orderId} before kitchen acceptance.`, 'warning');
   };
 
   const handleUpdateOrderStatus = (orderId: string, status: OrderStatus, customDriverName?: string, customDriverPhone?: string) => {
@@ -428,6 +468,7 @@ export default function App(): React.JSX.Element {
             onUpdateCartQuantity={handleUpdateCartQuantity}
             onRemoveCartItem={handleRemoveCartItem}
             onCheckout={handleCheckout}
+            onCancelOrder={handleCancelOrder}
             activeOrderId={activeOrderId}
             onResetActiveOrder={() => setActiveOrderId(null)}
             onSetActiveOrder={setActiveOrderId}
@@ -863,6 +904,7 @@ export default function App(): React.JSX.Element {
                       onUpdateCartQuantity={handleUpdateCartQuantity}
                       onRemoveCartItem={handleRemoveCartItem}
                       onCheckout={handleCheckout}
+                      onCancelOrder={handleCancelOrder}
                       activeOrderId={activeOrderId}
                       onResetActiveOrder={() => setActiveOrderId(null)}
                       onSetActiveOrder={setActiveOrderId}

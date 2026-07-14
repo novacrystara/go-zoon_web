@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Search, MapPin, ShoppingBag, Clock, Tag, Award, Check, ChevronLeft, Star, Phone, HelpCircle, Navigation, ShieldAlert, CreditCard, ClipboardList, History } from 'lucide-react';
 import { Restaurant, CartItem, Order, UKPostcodeZone, MenuItem, OrderStatus, CartCustomization } from '../../types';
 import { validateUKPostcode } from '../../data/restaurants';
+import LegalModal from '../LegalModal';
 
 interface GoZoonCustomerProps {
   restaurantsList: Restaurant[];
@@ -11,7 +12,8 @@ interface GoZoonCustomerProps {
   onAddToCart: (item: CartItem) => void;
   onUpdateCartQuantity: (id: string, delta: number) => void;
   onRemoveCartItem: (id: string) => void;
-  onCheckout: (address: string, postcode: string, cardName: string) => void;
+  onCheckout: (address: string, postcode: string, cardName: string, restaurantId: string) => Promise<{ success: boolean; error?: string }>;
+  onCancelOrder: (orderId: string) => void;
   activeOrderId: string | null;
   onResetActiveOrder: () => void;
   onSetActiveOrder: (id: string | null) => void;
@@ -35,6 +37,7 @@ export default function GoZoonCustomer({
   onUpdateCartQuantity,
   onRemoveCartItem,
   onCheckout,
+  onCancelOrder,
   activeOrderId,
   onResetActiveOrder,
   onSetActiveOrder,
@@ -53,6 +56,7 @@ export default function GoZoonCustomer({
   const [customizingItem, setCustomizingItem] = useState<MenuItem | null>(null);
   const [customizationNotes, setCustomizationNotes] = useState('');
   const [isCartOpen, setIsCartOpen] = useState(false);
+  const [isLegalOpen, setIsLegalOpen] = useState(false);
   const [isOrdersOpen, setIsOrdersOpen] = useState(false);
   const [isChangingPostcode, setIsChangingPostcode] = useState(false);
   const [postcodeInput, setPostcodeInput] = useState(currentPostcode.postcode);
@@ -219,14 +223,26 @@ export default function GoZoonCustomer({
         setProcessingStatus(statuses[i]);
       } else {
         clearInterval(interval);
-        onCheckout(deliveryAddress, currentPostcode.postcode, stripeCardName);
-        setIsCartOpen(false);
-        setCheckoutStep('cart');
-        // Clear card inputs
-        setStripeCardName('');
-        setStripeCardNum('');
-        setStripeCardExpiry('');
-        setStripeCardCvc('');
+        if (!selectedRestaurant) {
+          setStripeError('Lost track of which restaurant this basket belongs to. Please reopen it and try again.');
+          setCheckoutStep('stripe');
+          return;
+        }
+        onCheckout(deliveryAddress, currentPostcode.postcode, stripeCardName, selectedRestaurant.id).then(result => {
+          if (result.success) {
+            setIsCartOpen(false);
+            setCheckoutStep('cart');
+            // Clear card inputs
+            setStripeCardName('');
+            setStripeCardNum('');
+            setStripeCardExpiry('');
+            setStripeCardCvc('');
+          } else {
+            // Order wasn't actually saved - keep the basket intact and let the customer retry.
+            setStripeError(result.error || 'Your payment could not be completed. Please try again.');
+            setCheckoutStep('stripe');
+          }
+        });
       }
     }, 1200);
   };
@@ -410,7 +426,7 @@ export default function GoZoonCustomer({
       </div>
 
       {/* 2. Main screen based on selection */}
-      {activeOrder && activeOrder.status !== 'Delivered' ? (
+      {activeOrder && activeOrder.status !== 'Delivered' && activeOrder.status !== 'Cancelled' ? (
         /* live active tracker inside phone mock */
         <div className="flex-1 p-3 space-y-4">
           <div className="bg-white rounded-xl border border-slate-150 shadow-xs p-4 text-center">
@@ -494,13 +510,25 @@ export default function GoZoonCustomer({
                 <Phone className="w-3 h-3 text-brand-blue" />
                 <span>Call Courier</span>
               </button>
-              <button 
+              <button
                 onClick={onResetActiveOrder}
                 className="h-8 rounded-lg bg-slate-100 text-slate-700 font-bold text-[10px] flex items-center justify-center gap-1 hover:bg-slate-200"
               >
                 <span>Back to Store</span>
               </button>
             </div>
+            {activeOrder.status === 'Placed' && (
+              <button
+                onClick={() => {
+                  if (window.confirm('Cancel this order before the restaurant accepts it?')) {
+                    onCancelOrder(activeOrder.id);
+                  }
+                }}
+                className="w-full h-8 rounded-lg border border-red-200 text-red-600 font-bold text-[10px] flex items-center justify-center gap-1 hover:bg-red-50 cursor-pointer"
+              >
+                <span>Cancel Order</span>
+              </button>
+            )}
           </div>
 
           {/* Order Summary */}
@@ -1067,6 +1095,13 @@ export default function GoZoonCustomer({
                     </div>
                   </div>
 
+                  <p className="text-[9px] text-slate-400 text-center">
+                    By placing this order you agree to our{' '}
+                    <button type="button" onClick={() => setIsLegalOpen(true)} className="text-brand-blue font-bold underline cursor-pointer">
+                      Terms, Privacy &amp; Refund Policy
+                    </button>
+                  </p>
+
                   <div className="flex gap-2 pt-1">
                     <button
                       type="button"
@@ -1084,6 +1119,8 @@ export default function GoZoonCustomer({
                   </div>
                 </form>
               )}
+
+              {isLegalOpen && <LegalModal onClose={() => setIsLegalOpen(false)} />}
 
               {checkoutStep === 'processing' && (
                 <div className="h-64 flex flex-col items-center justify-center text-center space-y-4">

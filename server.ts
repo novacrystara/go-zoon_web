@@ -7,6 +7,9 @@ import { initializeApp, cert, getApps, getApp } from 'firebase-admin/app';
 import { getFirestore as getAdminFirestore, Firestore } from 'firebase-admin/firestore';
 import { getDatabase as getAdminDatabase, Database } from 'firebase-admin/database';
 import dotenv from 'dotenv';
+import { randomUUID } from 'crypto';
+import { UK_RESTAURANTS, validateUKPostcode } from './src/data/restaurants';
+import type { Restaurant, MenuItem } from './src/types';
 
 dotenv.config();
 
@@ -14,6 +17,10 @@ dotenv.config();
 const memoryDb = {
   orders: [] as any[],
   telemetry: {} as Record<string, { orderId: string, driverName: string, lat: number, lng: number, updatedAt: string }>,
+  restaurants: [] as Restaurant[],
+  closedRestaurants: [] as string[],
+  outOfStockItems: [] as string[],
+  drivers: [] as { name: string; phone: string; vehicle: string }[],
 };
 
 // PostgreSQL connection pool (Lazy initialized)
@@ -178,6 +185,7 @@ function mapRowToOrder(row: any): any {
   if (!row) return null;
   return {
     id: row.id,
+    customerId: row.customer_id || undefined,
     restaurantId: row.restaurant_id,
     restaurantName: row.restaurant_name,
     restaurantAddress: row.restaurant_address || '',
@@ -195,6 +203,39 @@ function mapRowToOrder(row: any): any {
     driverPhone: row.driver_phone || undefined,
     createdAt: row.created_at || new Date().toISOString()
   };
+}
+
+// Recompute pricing server-side from the trusted restaurant/menu catalog so a
+// client can't submit an arbitrary total for its basket contents.
+function computeServerTotal(restaurant: Restaurant, items: any[], deliveryPostcode: string): { subtotal: number; deliveryFee: number; serviceFee: number; vat: number; total: number } | null {
+  const zone = validateUKPostcode(deliveryPostcode || '');
+  const deliveryMultiplier = zone?.deliveryMultiplier ?? 1;
+  let subtotal = 0;
+  for (const cartItem of items || []) {
+    const menuItem = restaurant.menu.find(m => m.id === cartItem?.menuItem?.id);
+    if (!menuItem) return null;
+    const quantity = Number(cartItem.quantity);
+    if (!Number.isInteger(quantity) || quantity <= 0) return null;
+
+    let unitPrice = menuItem.price;
+    for (const c of cartItem.customizations || []) {
+      const option = menuItem.options?.find(o => o.name === c.name);
+      const choice = option?.choices.find(ch => ch.name === c.selectedOption);
+      // Unknown option/choice combos are rejected rather than silently trusted.
+      if (option && !choice) return null;
+      unitPrice += choice ? choice.price : Number(c.additionalPrice) || 0;
+    }
+    subtotal += unitPrice * quantity;
+  }
+
+  const deliveryFee = restaurant.offersFreeDelivery ? 0 : Math.round((restaurant.deliveryFee * deliveryMultiplier) * 100) / 100;
+  const serviceFee = subtotal > 0 ? Math.max(0.99, Math.round(subtotal * 0.05 * 100) / 100) : 0;
+  // NOT LEGALLY REVIEWED: mirrors the same flat-20%-of-subtotal placeholder used
+  // client-side (see App.tsx handleCheckout) - needs finance/legal sign-off before launch.
+  const vat = Math.round(subtotal * 0.2 * 100) / 100;
+  const total = Math.round((subtotal + deliveryFee + serviceFee) * 100) / 100;
+
+  return { subtotal: Math.round(subtotal * 100) / 100, deliveryFee, serviceFee, vat, total };
 }
 
 // Bootstrap PostgreSQL tables if connected
@@ -232,13 +273,80 @@ async function bootstrapPostgres() {
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_address TEXT;
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_postcode VARCHAR(20);
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS driver_phone VARCHAR(50);
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_id VARCHAR(100);
     `);
+
+    console.log('[PostgreSQL] Bootstrapping restaurants/business-state schema...');
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS restaurants (
+        id VARCHAR(50) PRIMARY KEY,
+        data JSONB NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE IF NOT EXISTS closed_restaurants (
+        restaurant_id VARCHAR(50) PRIMARY KEY
+      );
+      CREATE TABLE IF NOT EXISTS out_of_stock_items (
+        item_id VARCHAR(100) PRIMARY KEY
+      );
+      CREATE TABLE IF NOT EXISTS drivers (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100) NOT NULL,
+        phone VARCHAR(50) NOT NULL,
+        vehicle VARCHAR(50) NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS client_errors (
+        id SERIAL PRIMARY KEY,
+        message TEXT,
+        stack TEXT,
+        source VARCHAR(100),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Seed the restaurant catalog from the static defaults on first run only.
+    const { rows: existingRestaurants } = await client.query('SELECT COUNT(*) FROM restaurants;');
+    if (Number(existingRestaurants[0].count) === 0) {
+      for (const restaurant of UK_RESTAURANTS) {
+        await client.query('INSERT INTO restaurants (id, data) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING;', [restaurant.id, JSON.stringify(restaurant)]);
+      }
+      console.log(`[PostgreSQL] Seeded ${UK_RESTAURANTS.length} default restaurants.`);
+    }
+
+    const { rows: existingDrivers } = await client.query('SELECT COUNT(*) FROM drivers;');
+    if (Number(existingDrivers[0].count) === 0) {
+      const defaultDrivers = [
+        { name: 'Dave Henderson', phone: '+44 7700 900077', vehicle: 'Bicycle' },
+        { name: 'Sarah Jenkins', phone: '+44 7700 911044', vehicle: 'Electric Scooter' },
+        { name: 'Liam Fitzpatrick', phone: '+44 7700 900222', vehicle: 'Electric Scooter' }
+      ];
+      for (const driver of defaultDrivers) {
+        await client.query('INSERT INTO drivers (name, phone, vehicle) VALUES ($1, $2, $3);', [driver.name, driver.phone, driver.vehicle]);
+      }
+      console.log(`[PostgreSQL] Seeded ${defaultDrivers.length} default drivers.`);
+    }
 
     client.release();
     console.log('[PostgreSQL] Tables bootstrapped or verified successfully.');
   } catch (err) {
     console.error('[PostgreSQL] Error bootstrapping tables:', err);
   }
+}
+
+// Fetch the live restaurant catalog (Postgres-backed when available, static fallback otherwise).
+async function getRestaurantCatalog(): Promise<Restaurant[]> {
+  const pool = getPgPool();
+  if (pool) {
+    try {
+      const result = await pool.query('SELECT data FROM restaurants ORDER BY created_at ASC;');
+      if (result.rows.length > 0) {
+        return result.rows.map(r => r.data as Restaurant);
+      }
+    } catch (err) {
+      console.error('[PostgreSQL] Failed to fetch restaurant catalog, using memory/static fallback:', err);
+    }
+  }
+  return memoryDb.restaurants.length > 0 ? memoryDb.restaurants : UK_RESTAURANTS;
 }
 
 async function startServer() {
@@ -259,19 +367,13 @@ async function startServer() {
 
   // API Route: Create/Submit Order (Saves to Postgres, with Fallback to local memory)
   app.post('/api/orders', async (req, res) => {
-    const { 
-      id, 
-      customerName, 
-      restaurantId, 
-      restaurantName, 
+    const {
+      customerId,
+      customerName,
+      restaurantId,
+      restaurantName,
       restaurantAddress,
-      items, 
-      subtotal, 
-      deliveryFee, 
-      serviceFee,
-      vat,
-      tip, 
-      total, 
+      items,
       status,
       deliveryAddress,
       deliveryPostcode,
@@ -279,21 +381,41 @@ async function startServer() {
       driverName,
       driverPhone
     } = req.body;
-    
-    if (!id) {
-      return res.status(400).json({ error: 'Missing order specifications.' });
+
+    if (!restaurantId || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Missing order specifications: restaurantId and at least one item are required.' });
     }
- 
+    // The server assigns the order id itself - trusting a client-supplied id would let
+    // a caller guess/reuse another order's id and hijack it via the upsert below.
+    const id = randomUUID().replace(/-/g, '').slice(0, 12).toUpperCase();
+
+    // Recompute pricing from the trusted catalog rather than accepting the client's numbers -
+    // a tampered basket total (or a total for items that don't exist) is rejected outright.
+    const catalog = await getRestaurantCatalog();
+    const restaurant = catalog.find(r => r.id === restaurantId);
+    if (!restaurant) {
+      return res.status(400).json({ error: `Unknown restaurantId "${restaurantId}".` });
+    }
+    const computed = computeServerTotal(restaurant, items, deliveryPostcode || postcode || '');
+    if (!computed) {
+      return res.status(400).json({ error: 'One or more items/customizations do not match the restaurant menu.' });
+    }
+    const clientTotal = Number(req.body.total);
+    if (!Number.isFinite(clientTotal) || Math.abs(clientTotal - computed.total) > 0.02) {
+      return res.status(400).json({ error: 'Submitted total does not match the server-computed price for this basket.', expectedTotal: computed.total });
+    }
+    const { subtotal, deliveryFee, serviceFee, vat, total } = computed;
+
     const pool = getPgPool();
     if (pool) {
       try {
         const queryText = `
           INSERT INTO orders (
-            id, customer_name, restaurant_id, restaurant_name, restaurant_address,
+            id, customer_id, customer_name, restaurant_id, restaurant_name, restaurant_address,
             items, subtotal, delivery_fee, service_fee, vat, tip, total, status,
             delivery_address, delivery_postcode, driver_name, driver_phone, postcode
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
           ON CONFLICT (id) DO UPDATE SET
             status = EXCLUDED.status,
             driver_name = COALESCE(EXCLUDED.driver_name, orders.driver_name),
@@ -302,18 +424,19 @@ async function startServer() {
           RETURNING *;
         `;
         const values = [
-          id, 
-          customerName || 'Anonymous', 
-          restaurantId, 
+          id,
+          customerId || null,
+          customerName || 'Anonymous',
+          restaurantId,
           restaurantName,
           restaurantAddress || '',
-          JSON.stringify(items || []), 
-          subtotal || 0, 
-          deliveryFee || 0, 
-          serviceFee || 0,
-          vat || 0,
-          tip || 0, 
-          total || 0, 
+          JSON.stringify(items || []),
+          subtotal,
+          deliveryFee,
+          serviceFee,
+          vat,
+          0,
+          total,
           status || 'Placed',
           deliveryAddress || '',
           deliveryPostcode || postcode || '',
@@ -331,25 +454,27 @@ async function startServer() {
 
     // In-Memory fallback behavior
     const existingIdx = memoryDb.orders.findIndex(o => o.id === id);
-    const orderData = { 
-      id, 
-      customerName, 
-      restaurantId, 
-      restaurantName, 
+    const orderData = {
+      id,
+      customerId,
+      customerName,
+      restaurantId,
+      restaurantName,
       restaurantAddress,
-      items, 
-      subtotal, 
-      deliveryFee, 
+      items,
+      subtotal,
+      deliveryFee,
       serviceFee,
       vat,
-      tip, 
-      total, 
-      status, 
+      tip: 0,
+      total,
+      status: status || 'Placed',
       deliveryAddress,
       deliveryPostcode,
       driverName,
       driverPhone,
-      updatedAt: new Date().toISOString() 
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
     };
     if (existingIdx >= 0) {
       memoryDb.orders[existingIdx] = { ...memoryDb.orders[existingIdx], ...orderData };
@@ -401,23 +526,35 @@ async function startServer() {
     return res.status(444).json({ error: 'Order not found in memory database.' });
   });
 
-  // API Route: Fetch Orders
+  // API Route: Fetch Orders. When ?customerId= is supplied (the customer-facing app),
+  // results are scoped to that customer only - the unscoped "all orders" view stays
+  // available for the Business/Road King/Admin operational apps.
   app.get('/api/orders', async (req, res) => {
+    const customerId = typeof req.query.customerId === 'string' ? req.query.customerId : undefined;
+    const limit = 100;
     const pool = getPgPool();
     if (pool) {
       try {
-        const result = await pool.query('SELECT * FROM orders ORDER BY created_at DESC LIMIT 50;');
+        const result = customerId
+          ? await pool.query('SELECT * FROM orders WHERE customer_id = $1 ORDER BY created_at DESC LIMIT $2;', [customerId, limit])
+          : await pool.query('SELECT * FROM orders ORDER BY created_at DESC LIMIT $1;', [limit]);
         const mapped = result.rows.map(mapRowToOrder);
         return res.json({ orders: mapped, source: 'postgres' });
       } catch (err) {
         console.error('[PostgreSQL] Error fetching orders, using memory fallback:', err);
       }
     }
-    return res.json({ orders: memoryDb.orders, source: 'memory' });
+    const memoryOrders = customerId ? memoryDb.orders.filter(o => o.customerId === customerId) : memoryDb.orders;
+    return res.json({ orders: memoryOrders, source: 'memory' });
   });
 
-  // API Route: Delete all orders (Flush database)
+  // API Route: Delete all orders (Flush database).
+  // Destructive and unauthenticated by design (sandbox reset button) - disabled outside
+  // of local/dev usage so it can't be called against the live production deployment.
   app.delete('/api/orders', async (req, res) => {
+    if (process.env.NODE_ENV === 'production') {
+      return res.status(403).json({ error: 'Bulk order deletion is disabled in production.' });
+    }
     const pool = getPgPool();
     if (pool) {
       try {
@@ -504,6 +641,183 @@ async function startServer() {
       return res.json({ telemetry, source: 'memory' });
     }
     return res.status(404).json({ error: 'No live telemetry found for this order.' });
+  });
+
+  // API Route: Fetch the restaurant catalog plus shared closed/out-of-stock business state,
+  // so merchant changes on one device are visible to every customer instead of being
+  // trapped in that one browser's localStorage.
+  app.get('/api/restaurants', async (req, res) => {
+    const restaurants = await getRestaurantCatalog();
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const [closedResult, outOfStockResult] = await Promise.all([
+          pool.query('SELECT restaurant_id FROM closed_restaurants;'),
+          pool.query('SELECT item_id FROM out_of_stock_items;'),
+        ]);
+        return res.json({
+          restaurants,
+          closedRestaurants: closedResult.rows.map(r => r.restaurant_id),
+          outOfStockItems: outOfStockResult.rows.map(r => r.item_id),
+          source: 'postgres'
+        });
+      } catch (err) {
+        console.error('[PostgreSQL] Error fetching business state, using memory fallback:', err);
+      }
+    }
+    return res.json({
+      restaurants,
+      closedRestaurants: memoryDb.closedRestaurants,
+      outOfStockItems: memoryDb.outOfStockItems,
+      source: 'memory'
+    });
+  });
+
+  // API Route: Onboard a new restaurant (Business App)
+  app.post('/api/restaurants', async (req, res) => {
+    const restaurant = req.body as Restaurant;
+    if (!restaurant?.id || !restaurant?.name) {
+      return res.status(400).json({ error: 'Missing restaurant id/name.' });
+    }
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        await pool.query('INSERT INTO restaurants (id, data) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data;', [restaurant.id, JSON.stringify(restaurant)]);
+        return res.json({ success: true, source: 'postgres' });
+      } catch (err) {
+        console.error('[PostgreSQL] Error onboarding restaurant, using memory fallback:', err);
+      }
+    }
+    memoryDb.restaurants = [restaurant, ...memoryDb.restaurants.filter(r => r.id !== restaurant.id)];
+    return res.json({ success: true, source: 'memory' });
+  });
+
+  // API Route: Add a dish to an existing restaurant's menu (Business App)
+  app.post('/api/restaurants/:id/menu', async (req, res) => {
+    const { id } = req.params;
+    const menuItem = req.body as MenuItem;
+    if (!menuItem?.id || !menuItem?.name) {
+      return res.status(400).json({ error: 'Missing menu item id/name.' });
+    }
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const result = await pool.query('SELECT data FROM restaurants WHERE id = $1;', [id]);
+        if (result.rows.length === 0) {
+          return res.status(404).json({ error: 'Restaurant not found.' });
+        }
+        const restaurant = result.rows[0].data as Restaurant;
+        restaurant.menu = [...restaurant.menu, menuItem];
+        await pool.query('UPDATE restaurants SET data = $1 WHERE id = $2;', [JSON.stringify(restaurant), id]);
+        return res.json({ success: true, restaurant, source: 'postgres' });
+      } catch (err) {
+        console.error('[PostgreSQL] Error adding dish, using memory fallback:', err);
+      }
+    }
+    const restaurant = memoryDb.restaurants.find(r => r.id === id);
+    if (!restaurant) {
+      return res.status(404).json({ error: 'Restaurant not found.' });
+    }
+    restaurant.menu = [...restaurant.menu, menuItem];
+    return res.json({ success: true, restaurant, source: 'memory' });
+  });
+
+  // API Route: Toggle a restaurant open/closed (Business App)
+  app.post('/api/restaurants/:id/toggle-closed', async (req, res) => {
+    const { id } = req.params;
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const existing = await pool.query('SELECT 1 FROM closed_restaurants WHERE restaurant_id = $1;', [id]);
+        let isClosed: boolean;
+        if (existing.rows.length > 0) {
+          await pool.query('DELETE FROM closed_restaurants WHERE restaurant_id = $1;', [id]);
+          isClosed = false;
+        } else {
+          await pool.query('INSERT INTO closed_restaurants (restaurant_id) VALUES ($1) ON CONFLICT DO NOTHING;', [id]);
+          isClosed = true;
+        }
+        return res.json({ success: true, isClosed, source: 'postgres' });
+      } catch (err) {
+        console.error('[PostgreSQL] Error toggling closed state, using memory fallback:', err);
+      }
+    }
+    const isClosed = memoryDb.closedRestaurants.includes(id);
+    memoryDb.closedRestaurants = isClosed ? memoryDb.closedRestaurants.filter(r => r !== id) : [...memoryDb.closedRestaurants, id];
+    return res.json({ success: true, isClosed: !isClosed, source: 'memory' });
+  });
+
+  // API Route: Toggle a menu item's stock status (Business App)
+  app.post('/api/menu-items/:itemId/toggle-stock', async (req, res) => {
+    const { itemId } = req.params;
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const existing = await pool.query('SELECT 1 FROM out_of_stock_items WHERE item_id = $1;', [itemId]);
+        let isOutOfStock: boolean;
+        if (existing.rows.length > 0) {
+          await pool.query('DELETE FROM out_of_stock_items WHERE item_id = $1;', [itemId]);
+          isOutOfStock = false;
+        } else {
+          await pool.query('INSERT INTO out_of_stock_items (item_id) VALUES ($1) ON CONFLICT DO NOTHING;', [itemId]);
+          isOutOfStock = true;
+        }
+        return res.json({ success: true, isOutOfStock, source: 'postgres' });
+      } catch (err) {
+        console.error('[PostgreSQL] Error toggling stock state, using memory fallback:', err);
+      }
+    }
+    const isOutOfStock = memoryDb.outOfStockItems.includes(itemId);
+    memoryDb.outOfStockItems = isOutOfStock ? memoryDb.outOfStockItems.filter(i => i !== itemId) : [...memoryDb.outOfStockItems, itemId];
+    return res.json({ success: true, isOutOfStock: !isOutOfStock, source: 'memory' });
+  });
+
+  // API Route: Fetch/onboard delivery drivers (Road King App)
+  app.get('/api/drivers', async (req, res) => {
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const result = await pool.query('SELECT name, phone, vehicle FROM drivers ORDER BY id ASC;');
+        return res.json({ drivers: result.rows, source: 'postgres' });
+      } catch (err) {
+        console.error('[PostgreSQL] Error fetching drivers, using memory fallback:', err);
+      }
+    }
+    return res.json({ drivers: memoryDb.drivers, source: 'memory' });
+  });
+
+  app.post('/api/drivers', async (req, res) => {
+    const { name, phone, vehicle } = req.body;
+    if (!name || !phone || !vehicle) {
+      return res.status(400).json({ error: 'Missing driver name/phone/vehicle.' });
+    }
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        await pool.query('INSERT INTO drivers (name, phone, vehicle) VALUES ($1, $2, $3);', [name, phone, vehicle]);
+        return res.json({ success: true, source: 'postgres' });
+      } catch (err) {
+        console.error('[PostgreSQL] Error onboarding driver, using memory fallback:', err);
+      }
+    }
+    memoryDb.drivers = [...memoryDb.drivers, { name, phone, vehicle }];
+    return res.json({ success: true, source: 'memory' });
+  });
+
+  // API Route: Lightweight client-side error logging (no third-party crash reporting
+  // service required - just persists what broke and where for later triage).
+  app.post('/api/client-errors', async (req, res) => {
+    const { message, stack, source } = req.body;
+    console.error(`[ClientError] ${source || 'unknown'}: ${message}`);
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        await pool.query('INSERT INTO client_errors (message, stack, source) VALUES ($1, $2, $3);', [message || '', stack || '', source || '']);
+      } catch (err) {
+        console.error('[PostgreSQL] Failed to persist client error:', err);
+      }
+    }
+    return res.json({ success: true });
   });
 
   // Health probe with actual database connection tests
