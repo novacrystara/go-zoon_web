@@ -12,7 +12,7 @@ import { getApiUrl, fetchApi } from './api';
 export default function App(): React.JSX.Element {
   // 1. Core State Synchronization (LocalStorage Keys with Rebranded Gozoon prefixes)
   const [backendApiUrlInput, setBackendApiUrlInput] = useState<string>(() => {
-    return localStorage.getItem('gozoon_backend_api_url') || 'https://ais-pre-ap557zrj3sovqxnvxsqzsf-651428129387.asia-east1.run.app';
+    return localStorage.getItem('gozoon_backend_api_url') || 'https://go-zoon.ai.studio';
   });
 
   // Anonymous per-device customer identity so "My Orders" only shows this
@@ -598,7 +598,7 @@ export default function App(): React.JSX.Element {
                 </button>
                 <button
                   onClick={() => {
-                    const preUrl = 'https://ais-pre-ap557zrj3sovqxnvxsqzsf-651428129387.asia-east1.run.app';
+                    const preUrl = 'https://go-zoon.ai.studio';
                     setBackendApiUrlInput(preUrl);
                     localStorage.setItem('gozoon_backend_api_url', preUrl);
                     setTestResult(null);
@@ -808,7 +808,7 @@ export default function App(): React.JSX.Element {
                 <span>Capacitor Mobile API Sync:</span>
               </span>
               <p className="text-[10px] text-slate-300 leading-normal">
-                iOS Simulator / actual iPhone MUST use the public **Shared App URL (ais-pre)** to sync. The development URL (ais-dev) is protected by cookie-based login and will block external API requests.
+                iOS Simulator / actual iPhone MUST use the public live app URL (https://go-zoon.ai.studio) to sync, so every platform reads/writes the same Postgres database.
               </p>
               <div>
                 <label className="block text-[8px] font-bold text-slate-400 uppercase mb-1">Backend API Endpoint:</label>
@@ -826,7 +826,7 @@ export default function App(): React.JSX.Element {
                   <button
                     onClick={() => {
                       localStorage.removeItem('gozoon_backend_api_url');
-                      setBackendApiUrlInput('https://ais-pre-ap557zrj3sovqxnvxsqzsf-651428129387.asia-east1.run.app');
+                      setBackendApiUrlInput('https://go-zoon.ai.studio');
                       alert('Reset to default public Shared App URL!');
                     }}
                     className="px-2 py-1 bg-slate-800 hover:bg-slate-750 text-slate-400 hover:text-white rounded-md text-[9px] font-bold border border-slate-700 cursor-pointer shrink-0"
@@ -837,7 +837,7 @@ export default function App(): React.JSX.Element {
                 </div>
               </div>
               <p className="text-[9px] text-slate-400 italic">
-                Active Shared URL: https://ais-pre-ap557zrj3sovqxnvxsqzsf-651428129387.asia-east1.run.app
+                Active Shared URL: https://go-zoon.ai.studio
               </p>
             </div>
 

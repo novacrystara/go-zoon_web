@@ -1,13 +1,15 @@
 // Resolves the API base URL for native Capacitor / local dev contexts (where relative
 // paths don't resolve to a same-origin server) vs standard web hosting (relative paths).
+//
+// IMPORTANT: standard web hosting (the live site itself) always uses same-origin
+// relative paths - it must never be redirectable to a different backend, otherwise
+// the live app and its own database can silently diverge (this previously happened:
+// the dev-testing override below used to apply to every platform, so a stale
+// localStorage value from testing could make the production website write to a
+// different Postgres instance than the one it reads from). The override now only
+// applies to native/local builds, which have no same-origin backend to fall back to.
 export const getApiUrl = (): string => {
   if (typeof window !== 'undefined') {
-    // If the developer/user has configured a specific target sync endpoint, respect it on all platforms!
-    const saved = localStorage.getItem('gozoon_backend_api_url');
-    if (saved) {
-      return saved;
-    }
-
     const isLocalOrNative =
       window.location.protocol === 'file:' ||
       window.location.hostname === 'localhost' ||
@@ -16,6 +18,11 @@ export const getApiUrl = (): string => {
       window.location.protocol.startsWith('ionic');
 
     if (isLocalOrNative) {
+      // Dev/testing override, e.g. pointing a simulator build at a local server.
+      const saved = localStorage.getItem('gozoon_backend_api_url');
+      if (saved) {
+        return saved;
+      }
       return 'https://go-zoon.ai.studio';
     }
   }
