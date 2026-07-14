@@ -480,7 +480,7 @@ export default function App(): React.JSX.Element {
           </div>
         )}
         {/* Subtle floating toggle button to switch back to full Sandbox layout */}
-        <div className="absolute bottom-4 right-4 z-[9999] flex gap-2">
+        <div style={{ display: 'none' }} className="absolute bottom-4 right-4 z-[9999] flex gap-2">
           <button 
             onClick={() => {
               setIsDevSettingsOpen(true);
