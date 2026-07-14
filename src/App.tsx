@@ -25,9 +25,7 @@ const getApiUrl = (): string => {
       window.location.protocol.startsWith('ionic');
       
     if (isLocalOrNative) {
-      // Xcode iOS Simulator / actual iPhone testing defaults to the local Mac backend server
-      // running on port 3000 to bypass sandboxed cookie/proxy authentication requirements of Cloud Run.
-      return 'http://localhost:3000';
+      return 'https://go-zoon.ai.studio';
     }
   }
   return '';
@@ -132,6 +130,11 @@ export default function App(): React.JSX.Element {
         if (['customer', 'business', 'roadking', 'admin'].includes(lower)) {
           return lower as 'customer' | 'business' | 'roadking' | 'admin';
         }
+      }
+      // Packaged native builds have no URL query string to key off of;
+      // this Customer app target defaults straight into the customer view.
+      if (window.hasOwnProperty('Capacitor') || window.location.protocol === 'capacitor:') {
+        return 'customer';
       }
     }
     return null;
