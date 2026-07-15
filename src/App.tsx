@@ -42,6 +42,23 @@ export default function App(): React.JSX.Element {
 
   const [orders, setOrders] = useState<Order[]>([]);
 
+  // Inserts/updates an order by id rather than blindly prepending - without this,
+  // an order placed via handleCheckout can end up duplicated in state, because the
+  // server's SSE broadcast for that same order (fired synchronously inside the
+  // POST handler) can reach the client over the already-open connection before or
+  // alongside the POST's own HTTP response resolving.
+  const upsertOrder = (order: Order) => {
+    setOrders(prev => {
+      const idx = prev.findIndex(o => o.id === order.id);
+      if (idx >= 0) {
+        const updated = [...prev];
+        updated[idx] = { ...updated[idx], ...order };
+        return updated;
+      }
+      return [order, ...prev];
+    });
+  };
+
   const [activeOrderId, setActiveOrderId] = useState<string | null>(() => {
     return localStorage.getItem('gozoon_active_order_id') || null;
   });
@@ -146,18 +163,7 @@ export default function App(): React.JSX.Element {
       try {
         const data = JSON.parse(event.data);
         if (!data?.orders) return;
-        setOrders(prev => {
-          const updated = [...prev];
-          for (const partial of data.orders) {
-            const idx = updated.findIndex(o => o.id === partial.id);
-            if (idx >= 0) {
-              updated[idx] = { ...updated[idx], ...partial };
-            } else {
-              updated.unshift(partial);
-            }
-          }
-          return updated;
-        });
+        data.orders.forEach((partial: Order) => upsertOrder(partial));
       } catch (err) {
         console.error('[Orders] Failed to parse live update:', err);
       }
@@ -457,7 +463,9 @@ export default function App(): React.JSX.Element {
       }
 
       // Only now that the order is confirmed saved do we touch cart/order state.
-      setOrders(prev => [data.order, ...prev]);
+      // Upsert rather than blindly prepend - the live SSE update for this same
+      // order can arrive before this POST response does (see upsertOrder).
+      upsertOrder(data.order);
       setActiveOrderId(data.order.id);
       setCart([]);
 
