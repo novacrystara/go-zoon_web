@@ -103,6 +103,7 @@ export default function GoZoonCustomer({
   const [ratingValue, setRatingValue] = useState(5);
   const [ratingComment, setRatingComment] = useState('');
   const [ratingSubmitting, setRatingSubmitting] = useState(false);
+  const [dismissedRatingIds, setDismissedRatingIds] = useState<Set<string>>(new Set());
 
   // Stripe checkout state
   const [checkoutStep, setCheckoutStep] = useState<'cart' | 'stripe' | 'processing'>('cart');
@@ -139,13 +140,13 @@ export default function GoZoonCustomer({
 
   // Prompt for a rating the moment an order reaches Delivered and hasn't been rated yet.
   useEffect(() => {
-    const toRate = orders.find(o => o.status === 'Delivered' && !o.rated);
+    const toRate = orders.find(o => o.status === 'Delivered' && !o.rated && !dismissedRatingIds.has(o.id));
     if (toRate && !ratingOrder) {
       setRatingOrder(toRate);
       setRatingValue(5);
       setRatingComment('');
     }
-  }, [orders, ratingOrder]);
+  }, [orders, ratingOrder, dismissedRatingIds]);
 
   // Sync postcode input
   React.useEffect(() => {
@@ -409,6 +410,7 @@ export default function GoZoonCustomer({
         body: JSON.stringify({ orderId: ratingOrder.id, rating: ratingValue, comment: ratingComment.trim() || undefined })
       });
       if (res.ok) {
+        setDismissedRatingIds(prev => new Set(prev).add(ratingOrder.id));
         setRatingOrder(null);
       }
     } catch (err) {
@@ -1664,7 +1666,10 @@ export default function GoZoonCustomer({
             <div className="flex gap-2">
               <button
                 type="button"
-                onClick={() => setRatingOrder(null)}
+                onClick={() => {
+                  setDismissedRatingIds(prev => new Set(prev).add(ratingOrder.id));
+                  setRatingOrder(null);
+                }}
                 className="w-24 h-10 border border-slate-200 text-slate-600 rounded-lg font-bold cursor-pointer"
               >
                 Later
