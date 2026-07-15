@@ -27,6 +27,7 @@ export interface Restaurant {
   deliveryTimeRange: [number, number]; // e.g. [20, 30] minutes
   deliveryFee: number;
   minOrder: number;
+  enforceMinOrder?: boolean; // business-configurable toggle - minOrder is decorative unless this is true
   cuisine: string;
   image: string;
   bannerImage: string;
@@ -56,6 +57,7 @@ export type OrderStatus = 'Placed' | 'Preparing' | 'OutForDelivery' | 'Delivered
 
 export interface Order {
   id: string;
+  customerId?: string;
   restaurantId: string;
   restaurantName: string;
   restaurantAddress: string;
@@ -64,13 +66,18 @@ export interface Order {
   deliveryFee: number;
   serviceFee: number;
   vat: number;
+  tip: number;
+  discount?: number;
+  promoCode?: string;
   total: number;
   status: OrderStatus;
+  orderMode: 'Delivery' | 'Collection';
   deliveryAddress: string;
   deliveryPostcode: string;
   driverName?: string;
   driverPhone?: string;
   driverLatLng?: { lat: number; lng: number };
+  rated?: boolean;
   createdAt: string;
 }
 
@@ -78,4 +85,29 @@ export interface UKPostcodeZone {
   postcode: string;
   areaName: string;
   deliveryMultiplier: number; // to adjust delivery fees/times dynamically
+}
+
+export interface SavedAddress {
+  id: string;
+  customerId: string;
+  label: string; // e.g. "Home", "Work"
+  addressLine: string;
+  postcode: string;
+  isDefault?: boolean;
+}
+
+export interface Review {
+  id: string;
+  orderId: string;
+  customerId: string;
+  restaurantId: string;
+  rating: number; // 1-5
+  comment?: string;
+  createdAt: string;
+}
+
+export interface AuthSession {
+  customerId: string;
+  phone: string;
+  sessionToken: string;
 }

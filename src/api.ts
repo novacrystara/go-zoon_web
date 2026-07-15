@@ -29,10 +29,43 @@ export const getApiUrl = (): string => {
   return '';
 };
 
+const SESSION_STORAGE_KEY = 'gozoon_session';
+
+export interface StoredSession {
+  customerId: string;
+  phone: string;
+  sessionToken: string;
+}
+
+export const getStoredSession = (): StoredSession | null => {
+  try {
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+};
+
+export const setStoredSession = (session: StoredSession) => {
+  localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+};
+
+export const clearStoredSession = () => {
+  localStorage.removeItem(SESSION_STORAGE_KEY);
+};
+
+// Every request automatically carries the logged-in customer's session token
+// (if any) so the server can derive identity itself rather than trusting
+// whatever customerId a client claims to be.
 export const fetchApi = (endpoint: string, options?: RequestInit) => {
   const baseUrl = getApiUrl();
   const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
-  return fetch(`${baseUrl}${cleanEndpoint}`, options);
+  const session = getStoredSession();
+  const headers = new Headers(options?.headers);
+  if (session?.sessionToken && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${session.sessionToken}`);
+  }
+  return fetch(`${baseUrl}${cleanEndpoint}`, { ...options, headers });
 };
 
 // Best-effort client error report - deliberately fire-and-forget so a reporting

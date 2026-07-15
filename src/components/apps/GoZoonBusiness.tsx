@@ -11,6 +11,7 @@ interface GoZoonBusinessProps {
   outOfStockItems: string[];
   onToggleOutOfStockItem: (id: string) => void;
   onOnboardRestaurant: (restaurant: Restaurant) => void;
+  onToggleMinOrderEnforcement: (id: string) => void;
   onAddDishToRestaurant: (restaurantId: string, menuItem: MenuItem) => void;
   onAddLog: (event: string, type: 'info' | 'success' | 'warning') => void;
 }
@@ -24,6 +25,7 @@ export default function GoZoonBusiness({
   outOfStockItems,
   onToggleOutOfStockItem,
   onOnboardRestaurant,
+  onToggleMinOrderEnforcement,
   onAddDishToRestaurant,
   onAddLog
 }: GoZoonBusinessProps): React.JSX.Element {
@@ -429,6 +431,27 @@ export default function GoZoonBusiness({
               >
                 {isAddDishFormOpen ? <X className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
                 <span>{isAddDishFormOpen ? 'Close' : 'Add Dish'}</span>
+              </button>
+            </div>
+
+            {/* Minimum Order Enforcement Toggle */}
+            <div className="bg-slate-950/50 p-3 rounded-xl border border-slate-800 flex items-center justify-between gap-2">
+              <div>
+                <span className="text-[9px] font-extrabold text-brand-orange uppercase block">Minimum Order</span>
+                <p className="text-[9px] text-slate-500 leading-tight">
+                  Stated minimum is £{activeMerchant?.minOrder?.toFixed(2)}. {activeMerchant?.enforceMinOrder ? 'Customers must meet it to check out.' : 'Currently informational only - not enforced.'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => onToggleMinOrderEnforcement(activeMerchant?.id)}
+                className={`shrink-0 px-3 py-1.5 rounded-full text-[9px] font-extrabold cursor-pointer transition-all ${
+                  activeMerchant?.enforceMinOrder
+                    ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                    : 'bg-slate-900 text-slate-400 border border-slate-700'
+                }`}
+              >
+                {activeMerchant?.enforceMinOrder ? 'ENFORCED' : 'OFF'}
               </button>
             </div>
 

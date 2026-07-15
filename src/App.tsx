@@ -7,7 +7,7 @@ import GoZoonAdmin from './components/apps/GoZoonAdmin';
 import { UK_RESTAURANTS, UK_POSTCODES } from './data/restaurants';
 import { Restaurant, CartItem, Order, UKPostcodeZone, OrderStatus, MenuItem } from './types';
 import { Smartphone, Store, Bike, Landmark, Info, Sparkles, Server, ShieldCheck, CreditCard, Activity, Wifi, Battery, Settings } from 'lucide-react';
-import { getApiUrl, fetchApi } from './api';
+import { getApiUrl, fetchApi, getStoredSession, setStoredSession, clearStoredSession, StoredSession } from './api';
 
 export default function App(): React.JSX.Element {
   // 1. Core State Synchronization (LocalStorage Keys with Rebranded Gozoon prefixes)
@@ -15,17 +15,20 @@ export default function App(): React.JSX.Element {
     return localStorage.getItem('gozoon_backend_api_url') || 'https://go-zoon.ai.studio';
   });
 
-  // Anonymous per-device customer identity so "My Orders" only shows this
-  // customer's own orders instead of every order in the system. Not a real
-  // account/login system - just enough to stop the app leaking every
-  // customer's order history to every other customer.
-  const [customerId] = useState<string>(() => {
-    const saved = localStorage.getItem('gozoon_customer_id');
-    if (saved) return saved;
-    const generated = crypto.randomUUID();
-    localStorage.setItem('gozoon_customer_id', generated);
-    return generated;
-  });
+  // Real phone+OTP-backed customer identity (demo mode - see PhoneLogin). Orders/
+  // addresses/reviews are scoped to whichever session is currently logged in.
+  const [session, setSession] = useState<StoredSession | null>(() => getStoredSession());
+  const customerId = session?.customerId;
+
+  const handleLoggedIn = (newSession: StoredSession) => {
+    setStoredSession(newSession);
+    setSession(newSession);
+  };
+
+  const handleLogout = () => {
+    clearStoredSession();
+    setSession(null);
+  };
 
   const [currentPostcode, setCurrentPostcode] = useState<UKPostcodeZone>(() => {
     const saved = localStorage.getItem('gozoon_postcode');
@@ -101,13 +104,12 @@ export default function App(): React.JSX.Element {
     return null;
   });
 
-  // Load and sync orders from PostgreSQL Database (Interval-based real-time sync across devices).
-  // The dedicated customer app scopes to this device's own orders only; the sandbox
-  // hub / business / road king / admin views need visibility across all orders to operate.
+  // Sandbox hub / business / road king / admin views need visibility across all
+  // orders to operate and have no login system yet, so they keep polling.
   useEffect(() => {
+    if (standaloneApp === 'customer') return;
     const fetchOrders = () => {
-      const query = standaloneApp === 'customer' ? `?customerId=${encodeURIComponent(customerId)}` : '';
-      fetchApi(`/api/orders${query}`)
+      fetchApi('/api/orders')
         .then(res => res.json())
         .then(data => {
           if (data && data.orders) {
@@ -118,14 +120,70 @@ export default function App(): React.JSX.Element {
           console.error('[PostgreSQL] Failed to fetch orders:', err);
         });
     };
-
-    // Initial fetch
     fetchOrders();
-
-    // Poll every 3 seconds for seamless cross-device sync
     const interval = setInterval(fetchOrders, 3000);
     return () => clearInterval(interval);
-  }, [standaloneApp, customerId]);
+  }, [standaloneApp]);
+
+  // Dedicated customer app: one initial fetch of this customer's own orders, then
+  // live updates via Server-Sent Events (backed by Firebase Realtime Database
+  // server-side) instead of polling - near-instant status changes with far less
+  // battery/data/server overhead than a 3s interval.
+  useEffect(() => {
+    if (standaloneApp !== 'customer' || !customerId || !session?.sessionToken) return;
+
+    let cancelled = false;
+    fetchApi('/api/orders')
+      .then(res => res.json())
+      .then(data => {
+        if (!cancelled && data?.orders) setOrders(data.orders);
+      })
+      .catch(err => console.error('[Orders] Initial fetch failed:', err));
+
+    const url = `${getApiUrl()}/api/orders/stream?customerId=${encodeURIComponent(customerId)}`;
+    const eventSource = new EventSource(url);
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (!data?.orders) return;
+        setOrders(prev => {
+          const updated = [...prev];
+          for (const partial of data.orders) {
+            const idx = updated.findIndex(o => o.id === partial.id);
+            if (idx >= 0) {
+              updated[idx] = { ...updated[idx], ...partial };
+            } else {
+              updated.unshift(partial);
+            }
+          }
+          return updated;
+        });
+      } catch (err) {
+        console.error('[Orders] Failed to parse live update:', err);
+      }
+    };
+    eventSource.onerror = () => {
+      // EventSource auto-reconnects on transient errors; nothing to do here
+      // beyond letting the browser's built-in retry logic take over.
+    };
+
+    // Safety-net poll in case the SSE connection silently stalls (native WebViews
+    // occasionally drop long-lived connections in the background).
+    const fallbackInterval = setInterval(() => {
+      fetchApi('/api/orders')
+        .then(res => res.json())
+        .then(data => {
+          if (!cancelled && data?.orders) setOrders(data.orders);
+        })
+        .catch(() => {});
+    }, 30000);
+
+    return () => {
+      cancelled = true;
+      eventSource.close();
+      clearInterval(fallbackInterval);
+    };
+  }, [standaloneApp, customerId, session?.sessionToken]);
 
   // Load the shared restaurant catalog + closed/out-of-stock business state from the
   // backend so a merchant's changes are visible to every customer's device, not just
@@ -256,6 +314,14 @@ export default function App(): React.JSX.Element {
       .catch(err => console.error('[Restaurants] Failed to sync stock status:', err));
   };
 
+  const handleToggleMinOrderEnforcement = (id: string) => {
+    setRestaurantsList(prev => prev.map(r => r.id === id ? { ...r, enforceMinOrder: !r.enforceMinOrder } : r));
+    const restName = restaurantsList.find(r => r.id === id)?.name || 'Merchant';
+    addPlatformLog(`MIN_ORDER_TOGGLE: "${restName}" minimum-order enforcement toggled`, 'info');
+    fetchApi(`/api/restaurants/${id}/toggle-min-order-enforcement`, { method: 'POST' })
+      .catch(err => console.error('[Restaurants] Failed to sync min-order enforcement:', err));
+  };
+
   const handleOnboardRestaurant = (newRestaurant: Restaurant) => {
     setRestaurantsList(prev => [newRestaurant, ...prev]);
     fetchApi('/api/restaurants', {
@@ -323,7 +389,17 @@ export default function App(): React.JSX.Element {
   // Places the order and waits for the server to confirm it was actually saved before
   // touching the cart/UI state - previously the cart was cleared and an "active order"
   // shown optimistically even if the backend write failed, silently losing the order.
-  const handleCheckout = async (address: string, postcode: string, cardName: string, restaurantId: string): Promise<{ success: boolean; error?: string }> => {
+  const handleCheckout = async (params: {
+    address: string;
+    postcode: string;
+    cardName: string;
+    restaurantId: string;
+    orderMode: 'Delivery' | 'Collection';
+    tip: number;
+    promoCode?: string;
+    promoDiscountPercent?: number;
+  }): Promise<{ success: boolean; error?: string }> => {
+    const { address, postcode, cardName, restaurantId, orderMode, tip, promoCode, promoDiscountPercent = 0 } = params;
     const selectedRestaurant = restaurantsList.find(r => r.id === restaurantId);
     if (!selectedRestaurant) {
       return { success: false, error: 'Could not identify the restaurant for this basket. Please reopen the restaurant and try again.' };
@@ -334,32 +410,37 @@ export default function App(): React.JSX.Element {
       return acc + (item.menuItem.price + customizationsCost) * item.quantity;
     }, 0);
 
-    const delFee = selectedRestaurant.offersFreeDelivery ? 0 : Math.round((selectedRestaurant.deliveryFee * currentPostcode.deliveryMultiplier) * 100) / 100;
+    if (selectedRestaurant.enforceMinOrder && subtotal < selectedRestaurant.minOrder) {
+      return { success: false, error: `This restaurant requires a minimum order of £${selectedRestaurant.minOrder.toFixed(2)}.` };
+    }
+
+    const isCollection = orderMode === 'Collection';
+    const delFee = isCollection || selectedRestaurant.offersFreeDelivery ? 0 : Math.round((selectedRestaurant.deliveryFee * currentPostcode.deliveryMultiplier) * 100) / 100;
     const sFee = Math.max(0.99, Math.round(subtotal * 0.05 * 100) / 100);
-    const total = subtotal + delFee + sFee;
+    const discount = promoDiscountPercent > 0 ? Math.round(subtotal * (promoDiscountPercent / 100) * 100) / 100 : 0;
+    const safeTip = tip > 0 ? Math.round(tip * 100) / 100 : 0;
+    const total = Math.round((subtotal - discount + delFee + sFee + safeTip) * 100) / 100;
 
     // Pick rider from current online riders pool
     const assignedRider = drivers[Math.floor(Math.random() * drivers.length)] || drivers[0];
 
     const orderPayload = {
-      customerId,
       restaurantId: selectedRestaurant.id,
       restaurantName: selectedRestaurant.name,
       restaurantAddress: selectedRestaurant.address,
       items: cart,
-      subtotal,
-      deliveryFee: delFee,
-      serviceFee: sFee,
+      orderMode,
+      tip: safeTip,
+      promoCode,
       // NOT LEGALLY REVIEWED: flat 20% VAT on subtotal is a placeholder. UK hot-food
       // takeaway VAT treatment is nuanced (zero-rated cold food, standard-rated hot
       // food, delivery fee treatment) - needs finance/legal sign-off before launch.
-      vat: Math.round(subtotal * 0.2 * 100) / 100,
       total,
       status: 'Placed',
-      deliveryAddress: address,
+      deliveryAddress: isCollection ? selectedRestaurant.address : address,
       deliveryPostcode: postcode,
-      driverName: assignedRider?.name,
-      driverPhone: assignedRider?.phone,
+      driverName: isCollection ? undefined : assignedRider?.name,
+      driverPhone: isCollection ? undefined : assignedRider?.phone,
     };
 
     try {
@@ -460,6 +541,9 @@ export default function App(): React.JSX.Element {
       <div className="w-full h-screen overflow-hidden bg-white select-none relative">
         {standaloneApp === 'customer' && (
           <GoZoonCustomer
+            session={session}
+            onLoggedIn={handleLoggedIn}
+            onLogout={handleLogout}
             restaurantsList={restaurantsList}
             currentPostcode={currentPostcode}
             onPostcodeChange={setCurrentPostcode}
@@ -493,6 +577,7 @@ export default function App(): React.JSX.Element {
             outOfStockItems={outOfStockItems}
             onToggleOutOfStockItem={handleToggleOutOfStockItem}
             onOnboardRestaurant={handleOnboardRestaurant}
+            onToggleMinOrderEnforcement={handleToggleMinOrderEnforcement}
             onAddDishToRestaurant={handleAddDishToRestaurant}
             onAddLog={addPlatformLog}
           />
@@ -896,6 +981,9 @@ export default function App(): React.JSX.Element {
                 <div className="flex-1 overflow-hidden relative">
                   {activeApp === 'customer' && (
                     <GoZoonCustomer
+                      session={session}
+                      onLoggedIn={handleLoggedIn}
+                      onLogout={handleLogout}
                       restaurantsList={restaurantsList}
                       currentPostcode={currentPostcode}
                       onPostcodeChange={setCurrentPostcode}
@@ -930,6 +1018,7 @@ export default function App(): React.JSX.Element {
                       outOfStockItems={outOfStockItems}
                       onToggleOutOfStockItem={handleToggleOutOfStockItem}
                       onOnboardRestaurant={handleOnboardRestaurant}
+                      onToggleMinOrderEnforcement={handleToggleMinOrderEnforcement}
                       onAddDishToRestaurant={handleAddDishToRestaurant}
                       onAddLog={addPlatformLog}
                     />

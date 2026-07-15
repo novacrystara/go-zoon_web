@@ -13,6 +13,13 @@ import type { Restaurant, MenuItem } from './src/types';
 
 dotenv.config();
 
+// Demo-mode phone auth: no Twilio/SMS integration - a fixed whitelist of demo
+// numbers accept a fixed OTP. This also doubles as the demo account Apple/Google
+// require for App Store review of any app with a login wall.
+const DEMO_PHONE_NUMBERS = ['+447700900000', '+447700900001'];
+const DEMO_OTP = '123456';
+const normalizePhone = (phone: string) => (phone || '').replace(/[\s()-]/g, '');
+
 // In-memory fallbacks for development/testing sandbox when real databases aren't configured yet
 const memoryDb = {
   orders: [] as any[],
@@ -21,6 +28,11 @@ const memoryDb = {
   closedRestaurants: [] as string[],
   outOfStockItems: [] as string[],
   drivers: [] as { name: string; phone: string; vehicle: string }[],
+  customers: [] as { id: string; phone: string }[],
+  sessions: {} as Record<string, string>, // token -> customerId
+  addresses: [] as any[],
+  reviews: [] as any[],
+  promoCodes: { CHIPPY10: 10 } as Record<string, number>,
 };
 
 // PostgreSQL connection pool (Lazy initialized)
@@ -195,47 +207,66 @@ function mapRowToOrder(row: any): any {
     serviceFee: Number(row.service_fee || 0),
     vat: Number(row.vat || 0),
     tip: Number(row.tip || 0),
+    discount: Number(row.discount || 0),
+    promoCode: row.promo_code || undefined,
     total: Number(row.total),
     status: row.status,
+    orderMode: row.order_mode || 'Delivery',
     deliveryAddress: row.delivery_address || '',
     deliveryPostcode: row.delivery_postcode || row.postcode || '',
     driverName: row.driver_name || undefined,
     driverPhone: row.driver_phone || undefined,
+    rated: !!row.rated,
     createdAt: row.created_at || new Date().toISOString()
   };
 }
 
 // Recompute pricing server-side from the trusted restaurant/menu catalog so a
 // client can't submit an arbitrary total for its basket contents.
-function computeServerTotal(restaurant: Restaurant, items: any[], deliveryPostcode: string): { subtotal: number; deliveryFee: number; serviceFee: number; vat: number; total: number } | null {
+function computeServerTotal(
+  restaurant: Restaurant,
+  items: any[],
+  deliveryPostcode: string,
+  orderMode: 'Delivery' | 'Collection',
+  tip: number,
+  promoDiscountPercent: number
+): { subtotal: number; deliveryFee: number; serviceFee: number; vat: number; discount: number; tip: number; total: number } | { error: string; expectedTotal?: number } {
   const zone = validateUKPostcode(deliveryPostcode || '');
   const deliveryMultiplier = zone?.deliveryMultiplier ?? 1;
   let subtotal = 0;
   for (const cartItem of items || []) {
     const menuItem = restaurant.menu.find(m => m.id === cartItem?.menuItem?.id);
-    if (!menuItem) return null;
+    if (!menuItem) return { error: 'One or more items/customizations do not match the restaurant menu.' };
     const quantity = Number(cartItem.quantity);
-    if (!Number.isInteger(quantity) || quantity <= 0) return null;
+    if (!Number.isInteger(quantity) || quantity <= 0) return { error: 'One or more items/customizations do not match the restaurant menu.' };
 
     let unitPrice = menuItem.price;
     for (const c of cartItem.customizations || []) {
       const option = menuItem.options?.find(o => o.name === c.name);
       const choice = option?.choices.find(ch => ch.name === c.selectedOption);
       // Unknown option/choice combos are rejected rather than silently trusted.
-      if (option && !choice) return null;
+      if (option && !choice) return { error: 'One or more items/customizations do not match the restaurant menu.' };
       unitPrice += choice ? choice.price : Number(c.additionalPrice) || 0;
     }
     subtotal += unitPrice * quantity;
   }
 
-  const deliveryFee = restaurant.offersFreeDelivery ? 0 : Math.round((restaurant.deliveryFee * deliveryMultiplier) * 100) / 100;
-  const serviceFee = subtotal > 0 ? Math.max(0.99, Math.round(subtotal * 0.05 * 100) / 100) : 0;
-  // NOT LEGALLY REVIEWED: mirrors the same flat-20%-of-subtotal placeholder used
-  // client-side (see App.tsx handleCheckout) - needs finance/legal sign-off before launch.
-  const vat = Math.round(subtotal * 0.2 * 100) / 100;
-  const total = Math.round((subtotal + deliveryFee + serviceFee) * 100) / 100;
+  if (restaurant.enforceMinOrder && subtotal < restaurant.minOrder) {
+    return { error: `This restaurant requires a minimum order of £${restaurant.minOrder.toFixed(2)} (basket is £${subtotal.toFixed(2)}).` };
+  }
 
-  return { subtotal: Math.round(subtotal * 100) / 100, deliveryFee, serviceFee, vat, total };
+  const isCollection = orderMode === 'Collection';
+  const deliveryFee = isCollection || restaurant.offersFreeDelivery ? 0 : Math.round((restaurant.deliveryFee * deliveryMultiplier) * 100) / 100;
+  const serviceFee = subtotal > 0 ? Math.max(0.99, Math.round(subtotal * 0.05 * 100) / 100) : 0;
+  const discount = promoDiscountPercent > 0 ? Math.round(subtotal * (promoDiscountPercent / 100) * 100) / 100 : 0;
+  // NOT LEGALLY REVIEWED: informational breakdown only, mirrors prior behavior of not
+  // being additive on top of the total (UK menu prices are typically VAT-inclusive
+  // already) - needs finance/legal sign-off before launch either way.
+  const vat = Math.round((subtotal - discount) * 0.2 * 100) / 100;
+  const safeTip = Number.isFinite(tip) && tip > 0 ? Math.min(Math.round(tip * 100) / 100, 50) : 0;
+  const total = Math.round((subtotal - discount + deliveryFee + serviceFee + safeTip) * 100) / 100;
+
+  return { subtotal: Math.round(subtotal * 100) / 100, deliveryFee, serviceFee, vat, discount, tip: safeTip, total };
 }
 
 // Bootstrap PostgreSQL tables if connected
@@ -274,6 +305,10 @@ async function bootstrapPostgres() {
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_postcode VARCHAR(20);
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS driver_phone VARCHAR(50);
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_id VARCHAR(100);
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_mode VARCHAR(20) DEFAULT 'Delivery';
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS discount DECIMAL(10,2) DEFAULT 0;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS promo_code VARCHAR(50);
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS rated BOOLEAN DEFAULT FALSE;
     `);
 
     console.log('[PostgreSQL] Bootstrapping restaurants/business-state schema...');
@@ -302,7 +337,46 @@ async function bootstrapPostgres() {
         source VARCHAR(100),
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
+      CREATE TABLE IF NOT EXISTS customers (
+        id VARCHAR(50) PRIMARY KEY,
+        phone VARCHAR(30) UNIQUE NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE IF NOT EXISTS sessions (
+        token VARCHAR(64) PRIMARY KEY,
+        customer_id VARCHAR(50) NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE IF NOT EXISTS addresses (
+        id VARCHAR(50) PRIMARY KEY,
+        customer_id VARCHAR(50) NOT NULL,
+        label VARCHAR(50) NOT NULL,
+        address_line TEXT NOT NULL,
+        postcode VARCHAR(20) NOT NULL,
+        is_default BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE IF NOT EXISTS reviews (
+        id VARCHAR(50) PRIMARY KEY,
+        order_id VARCHAR(50) NOT NULL,
+        customer_id VARCHAR(50) NOT NULL,
+        restaurant_id VARCHAR(50) NOT NULL,
+        rating SMALLINT NOT NULL,
+        comment TEXT,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE IF NOT EXISTS promo_codes (
+        code VARCHAR(30) PRIMARY KEY,
+        discount_percent SMALLINT NOT NULL,
+        active BOOLEAN DEFAULT TRUE
+      );
     `);
+
+    const { rows: existingPromos } = await client.query('SELECT COUNT(*) FROM promo_codes;');
+    if (Number(existingPromos[0].count) === 0) {
+      await client.query('INSERT INTO promo_codes (code, discount_percent, active) VALUES ($1, $2, TRUE);', ['CHIPPY10', 10]);
+      console.log('[PostgreSQL] Seeded default promo code CHIPPY10.');
+    }
 
     // Seed the restaurant catalog from the static defaults on first run only.
     const { rows: existingRestaurants } = await client.query('SELECT COUNT(*) FROM restaurants;');
@@ -349,6 +423,69 @@ async function getRestaurantCatalog(): Promise<Restaurant[]> {
   return memoryDb.restaurants.length > 0 ? memoryDb.restaurants : UK_RESTAURANTS;
 }
 
+// Resolves the authenticated customerId from a session token, never trusting a
+// client-supplied customerId directly - closes the gap where anyone who knew/
+// guessed a customerId string could read another customer's orders/addresses.
+async function getSessionCustomerId(req: express.Request): Promise<string | null> {
+  const auth = req.headers.authorization;
+  const token = auth?.startsWith('Bearer ') ? auth.slice(7) : null;
+  if (!token) return null;
+
+  const pool = getPgPool();
+  if (pool) {
+    try {
+      const result = await pool.query('SELECT customer_id FROM sessions WHERE token = $1;', [token]);
+      return result.rows[0]?.customer_id || null;
+    } catch (err) {
+      console.error('[PostgreSQL] Failed to resolve session, using memory fallback:', err);
+    }
+  }
+  return memoryDb.sessions[token] || null;
+}
+
+async function getPromoDiscount(code: string | undefined): Promise<{ code: string; discountPercent: number } | null> {
+  if (!code) return null;
+  const normalized = code.trim().toUpperCase();
+  const pool = getPgPool();
+  if (pool) {
+    try {
+      const result = await pool.query('SELECT discount_percent FROM promo_codes WHERE code = $1 AND active = TRUE;', [normalized]);
+      if (result.rows.length > 0) {
+        return { code: normalized, discountPercent: Number(result.rows[0].discount_percent) };
+      }
+      return null;
+    } catch (err) {
+      console.error('[PostgreSQL] Failed to validate promo code, using memory fallback:', err);
+    }
+  }
+  const discountPercent = memoryDb.promoCodes[normalized];
+  return discountPercent ? { code: normalized, discountPercent } : null;
+}
+
+// Live-order-update fanout: connected SSE clients get pushed to instantly (this
+// server instance), and every update is also mirrored to Firebase Realtime
+// Database so it's durable and reaches clients connected to a different
+// instance if this ever scales out horizontally. Replaces 3s client polling.
+const sseClients = new Map<string, Set<express.Response>>();
+
+function broadcastOrderUpdate(customerId: string, order: any) {
+  const clients = sseClients.get(customerId);
+  if (clients && clients.size > 0) {
+    const payload = `data: ${JSON.stringify({ orders: [order] })}\n\n`;
+    clients.forEach(res => res.write(payload));
+  }
+  const rtdbInstance = getRtdb();
+  if (rtdbInstance) {
+    rtdbInstance.ref(`orderUpdates/${customerId}/${order.id}`).set({
+      id: order.id,
+      status: order.status,
+      driverName: order.driverName || null,
+      driverPhone: order.driverPhone || null,
+      updatedAt: new Date().toISOString()
+    }).catch((err: any) => console.error('[RTDB] Failed to mirror order update:', err));
+  }
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -367,19 +504,28 @@ async function startServer() {
 
   // API Route: Create/Submit Order (Saves to Postgres, with Fallback to local memory)
   app.post('/api/orders', async (req, res) => {
+    // Orders require a logged-in customer - the server derives identity from the
+    // session token rather than trusting a client-supplied customerId.
+    const sessionCustomerId = await getSessionCustomerId(req);
+    if (!sessionCustomerId) {
+      return res.status(401).json({ error: 'Please log in to place an order.' });
+    }
+
     const {
-      customerId,
       customerName,
       restaurantId,
       restaurantName,
       restaurantAddress,
       items,
       status,
+      orderMode,
       deliveryAddress,
       deliveryPostcode,
       postcode,
       driverName,
-      driverPhone
+      driverPhone,
+      tip,
+      promoCode
     } = req.body;
 
     if (!restaurantId || !Array.isArray(items) || items.length === 0) {
@@ -388,6 +534,7 @@ async function startServer() {
     // The server assigns the order id itself - trusting a client-supplied id would let
     // a caller guess/reuse another order's id and hijack it via the upsert below.
     const id = randomUUID().replace(/-/g, '').slice(0, 12).toUpperCase();
+    const resolvedOrderMode: 'Delivery' | 'Collection' = orderMode === 'Collection' ? 'Collection' : 'Delivery';
 
     // Recompute pricing from the trusted catalog rather than accepting the client's numbers -
     // a tampered basket total (or a total for items that don't exist) is rejected outright.
@@ -396,15 +543,16 @@ async function startServer() {
     if (!restaurant) {
       return res.status(400).json({ error: `Unknown restaurantId "${restaurantId}".` });
     }
-    const computed = computeServerTotal(restaurant, items, deliveryPostcode || postcode || '');
-    if (!computed) {
-      return res.status(400).json({ error: 'One or more items/customizations do not match the restaurant menu.' });
+    const promo = await getPromoDiscount(promoCode);
+    const computed = computeServerTotal(restaurant, items, deliveryPostcode || postcode || '', resolvedOrderMode, Number(tip) || 0, promo?.discountPercent || 0);
+    if ('error' in computed) {
+      return res.status(400).json(computed);
     }
     const clientTotal = Number(req.body.total);
     if (!Number.isFinite(clientTotal) || Math.abs(clientTotal - computed.total) > 0.02) {
       return res.status(400).json({ error: 'Submitted total does not match the server-computed price for this basket.', expectedTotal: computed.total });
     }
-    const { subtotal, deliveryFee, serviceFee, vat, total } = computed;
+    const { subtotal, deliveryFee, serviceFee, vat, discount, tip: safeTip, total } = computed;
 
     const pool = getPgPool();
     if (pool) {
@@ -412,10 +560,10 @@ async function startServer() {
         const queryText = `
           INSERT INTO orders (
             id, customer_id, customer_name, restaurant_id, restaurant_name, restaurant_address,
-            items, subtotal, delivery_fee, service_fee, vat, tip, total, status,
-            delivery_address, delivery_postcode, driver_name, driver_phone, postcode
+            items, subtotal, delivery_fee, service_fee, vat, tip, discount, promo_code, total, status,
+            order_mode, delivery_address, delivery_postcode, driver_name, driver_phone, postcode
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
           ON CONFLICT (id) DO UPDATE SET
             status = EXCLUDED.status,
             driver_name = COALESCE(EXCLUDED.driver_name, orders.driver_name),
@@ -425,7 +573,7 @@ async function startServer() {
         `;
         const values = [
           id,
-          customerId || null,
+          sessionCustomerId,
           customerName || 'Anonymous',
           restaurantId,
           restaurantName,
@@ -435,9 +583,12 @@ async function startServer() {
           deliveryFee,
           serviceFee,
           vat,
-          0,
+          safeTip,
+          discount,
+          promo?.code || null,
           total,
           status || 'Placed',
+          resolvedOrderMode,
           deliveryAddress || '',
           deliveryPostcode || postcode || '',
           driverName || null,
@@ -446,7 +597,9 @@ async function startServer() {
         ];
         const result = await pool.query(queryText, values);
         console.log(`[PostgreSQL] Order created/updated successfully: #${id}`);
-        return res.json({ success: true, order: mapRowToOrder(result.rows[0]), source: 'postgres' });
+        const order = mapRowToOrder(result.rows[0]);
+        broadcastOrderUpdate(sessionCustomerId, order);
+        return res.json({ success: true, order, source: 'postgres' });
       } catch (err) {
         console.error('[PostgreSQL] Error inserting order, resorting to memory fallback:', err);
       }
@@ -456,7 +609,7 @@ async function startServer() {
     const existingIdx = memoryDb.orders.findIndex(o => o.id === id);
     const orderData = {
       id,
-      customerId,
+      customerId: sessionCustomerId,
       customerName,
       restaurantId,
       restaurantName,
@@ -466,9 +619,12 @@ async function startServer() {
       deliveryFee,
       serviceFee,
       vat,
-      tip: 0,
+      tip: safeTip,
+      discount,
+      promoCode: promo?.code,
       total,
       status: status || 'Placed',
+      orderMode: resolvedOrderMode,
       deliveryAddress,
       deliveryPostcode,
       driverName,
@@ -482,6 +638,7 @@ async function startServer() {
       memoryDb.orders.push(orderData);
     }
     console.log(`[MemoryStore] Order updated: #${id} (${status})`);
+    broadcastOrderUpdate(sessionCustomerId, orderData);
     return res.json({ success: true, order: orderData, source: 'memory' });
   });
 
@@ -505,7 +662,9 @@ async function startServer() {
         const result = await pool.query(queryText, [status || null, driverName || null, driverPhone || null, id]);
         if (result.rows.length > 0) {
           console.log(`[PostgreSQL] Status updated for Order #${id}: ${status}`);
-          return res.json({ success: true, order: mapRowToOrder(result.rows[0]), source: 'postgres' });
+          const order = mapRowToOrder(result.rows[0]);
+          if (order.customerId) broadcastOrderUpdate(order.customerId, order);
+          return res.json({ success: true, order, source: 'postgres' });
         }
       } catch (err) {
         console.error('[PostgreSQL] Error updating order status, reverting to memory fallback:', err);
@@ -520,17 +679,21 @@ async function startServer() {
       if (driverPhone !== undefined) order.driverPhone = driverPhone;
       order.updatedAt = new Date().toISOString();
       console.log(`[MemoryStore] Status updated for Order #${id}: ${status}`);
+      if (order.customerId) broadcastOrderUpdate(order.customerId, order);
       return res.json({ success: true, order, source: 'memory' });
     }
 
     return res.status(444).json({ error: 'Order not found in memory database.' });
   });
 
-  // API Route: Fetch Orders. When ?customerId= is supplied (the customer-facing app),
-  // results are scoped to that customer only - the unscoped "all orders" view stays
-  // available for the Business/Road King/Admin operational apps.
+  // API Route: Fetch Orders. A valid session scopes results to that customer only
+  // (the customer app never trusts a client-supplied customerId) - the unscoped
+  // "all orders" view stays available, unauthenticated, for the Business/Road
+  // King/Admin operational apps which don't have their own auth system yet.
   app.get('/api/orders', async (req, res) => {
-    const customerId = typeof req.query.customerId === 'string' ? req.query.customerId : undefined;
+    const sessionCustomerId = await getSessionCustomerId(req);
+    const queryCustomerId = typeof req.query.customerId === 'string' ? req.query.customerId : undefined;
+    const customerId = sessionCustomerId || queryCustomerId;
     const limit = 100;
     const pool = getPgPool();
     if (pool) {
@@ -818,6 +981,250 @@ async function startServer() {
       }
     }
     return res.json({ success: true });
+  });
+
+  // ===== Phone + OTP auth (demo mode: no Twilio/SMS - fixed whitelist + fixed OTP) =====
+
+  app.post('/api/auth/request-otp', async (req, res) => {
+    const phone = normalizePhone(req.body?.phone);
+    if (!DEMO_PHONE_NUMBERS.includes(phone)) {
+      return res.status(400).json({ error: 'This demo only accepts the provided demo phone numbers.', demoNumbers: DEMO_PHONE_NUMBERS });
+    }
+    // No real SMS is sent - the OTP is fixed and shown in the UI for demo/testing purposes.
+    return res.json({ success: true, demoOtp: DEMO_OTP });
+  });
+
+  app.post('/api/auth/verify-otp', async (req, res) => {
+    const phone = normalizePhone(req.body?.phone);
+    const otp = String(req.body?.otp || '');
+    if (!DEMO_PHONE_NUMBERS.includes(phone) || otp !== DEMO_OTP) {
+      return res.status(401).json({ error: 'Invalid phone number or OTP.' });
+    }
+
+    const sessionToken = randomUUID().replace(/-/g, '');
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const existing = await pool.query('SELECT id FROM customers WHERE phone = $1;', [phone]);
+        let customerId: string;
+        if (existing.rows.length > 0) {
+          customerId = existing.rows[0].id;
+        } else {
+          customerId = randomUUID().replace(/-/g, '').slice(0, 16);
+          await pool.query('INSERT INTO customers (id, phone) VALUES ($1, $2);', [customerId, phone]);
+        }
+        await pool.query('INSERT INTO sessions (token, customer_id) VALUES ($1, $2);', [sessionToken, customerId]);
+        return res.json({ success: true, customerId, phone, sessionToken });
+      } catch (err) {
+        console.error('[PostgreSQL] Error during OTP verification, using memory fallback:', err);
+      }
+    }
+
+    let customer = memoryDb.customers.find(c => c.phone === phone);
+    if (!customer) {
+      customer = { id: randomUUID().replace(/-/g, '').slice(0, 16), phone };
+      memoryDb.customers.push(customer);
+    }
+    memoryDb.sessions[sessionToken] = customer.id;
+    return res.json({ success: true, customerId: customer.id, phone, sessionToken });
+  });
+
+  // Validates a stored session token on app launch so a customer stays logged in.
+  app.get('/api/auth/me', async (req, res) => {
+    const customerId = await getSessionCustomerId(req);
+    if (!customerId) {
+      return res.status(401).json({ error: 'Invalid or expired session.' });
+    }
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const result = await pool.query('SELECT phone FROM customers WHERE id = $1;', [customerId]);
+        return res.json({ customerId, phone: result.rows[0]?.phone });
+      } catch (err) {
+        console.error('[PostgreSQL] Error resolving customer, using memory fallback:', err);
+      }
+    }
+    const customer = memoryDb.customers.find(c => c.id === customerId);
+    return res.json({ customerId, phone: customer?.phone });
+  });
+
+  // ===== Saved addresses =====
+
+  app.get('/api/addresses', async (req, res) => {
+    const customerId = await getSessionCustomerId(req);
+    if (!customerId) return res.status(401).json({ error: 'Please log in.' });
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const result = await pool.query('SELECT * FROM addresses WHERE customer_id = $1 ORDER BY is_default DESC, created_at DESC;', [customerId]);
+        return res.json({ addresses: result.rows.map(r => ({ id: r.id, customerId: r.customer_id, label: r.label, addressLine: r.address_line, postcode: r.postcode, isDefault: r.is_default })) });
+      } catch (err) {
+        console.error('[PostgreSQL] Error fetching addresses, using memory fallback:', err);
+      }
+    }
+    return res.json({ addresses: memoryDb.addresses.filter(a => a.customerId === customerId) });
+  });
+
+  app.post('/api/addresses', async (req, res) => {
+    const customerId = await getSessionCustomerId(req);
+    if (!customerId) return res.status(401).json({ error: 'Please log in.' });
+    const { label, addressLine, postcode, isDefault } = req.body;
+    if (!label || !addressLine || !postcode) {
+      return res.status(400).json({ error: 'Missing label/addressLine/postcode.' });
+    }
+    const id = randomUUID().replace(/-/g, '').slice(0, 12);
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        if (isDefault) {
+          await pool.query('UPDATE addresses SET is_default = FALSE WHERE customer_id = $1;', [customerId]);
+        }
+        await pool.query('INSERT INTO addresses (id, customer_id, label, address_line, postcode, is_default) VALUES ($1, $2, $3, $4, $5, $6);', [id, customerId, label, addressLine, postcode, !!isDefault]);
+        return res.json({ success: true, address: { id, customerId, label, addressLine, postcode, isDefault: !!isDefault } });
+      } catch (err) {
+        console.error('[PostgreSQL] Error saving address, using memory fallback:', err);
+      }
+    }
+    const address = { id, customerId, label, addressLine, postcode, isDefault: !!isDefault };
+    memoryDb.addresses.push(address);
+    return res.json({ success: true, address });
+  });
+
+  app.delete('/api/addresses/:id', async (req, res) => {
+    const customerId = await getSessionCustomerId(req);
+    if (!customerId) return res.status(401).json({ error: 'Please log in.' });
+    const { id } = req.params;
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        await pool.query('DELETE FROM addresses WHERE id = $1 AND customer_id = $2;', [id, customerId]);
+        return res.json({ success: true });
+      } catch (err) {
+        console.error('[PostgreSQL] Error deleting address, using memory fallback:', err);
+      }
+    }
+    memoryDb.addresses = memoryDb.addresses.filter(a => !(a.id === id && a.customerId === customerId));
+    return res.json({ success: true });
+  });
+
+  // ===== Post-delivery ratings/reviews =====
+
+  app.post('/api/reviews', async (req, res) => {
+    const customerId = await getSessionCustomerId(req);
+    if (!customerId) return res.status(401).json({ error: 'Please log in.' });
+    const { orderId, rating, comment } = req.body;
+    const numericRating = Number(rating);
+    if (!orderId || !Number.isInteger(numericRating) || numericRating < 1 || numericRating > 5) {
+      return res.status(400).json({ error: 'A valid orderId and a 1-5 rating are required.' });
+    }
+
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const orderResult = await pool.query('SELECT customer_id, restaurant_id, status, rated FROM orders WHERE id = $1;', [orderId]);
+        const order = orderResult.rows[0];
+        if (!order || order.customer_id !== customerId) {
+          return res.status(404).json({ error: 'Order not found.' });
+        }
+        if (order.status !== 'Delivered') {
+          return res.status(400).json({ error: 'Only delivered orders can be rated.' });
+        }
+        if (order.rated) {
+          return res.status(400).json({ error: 'This order has already been rated.' });
+        }
+        const id = randomUUID().replace(/-/g, '').slice(0, 12);
+        await pool.query('INSERT INTO reviews (id, order_id, customer_id, restaurant_id, rating, comment) VALUES ($1, $2, $3, $4, $5, $6);', [id, orderId, customerId, order.restaurant_id, numericRating, comment || null]);
+        await pool.query('UPDATE orders SET rated = TRUE WHERE id = $1;', [orderId]);
+        return res.json({ success: true });
+      } catch (err) {
+        console.error('[PostgreSQL] Error saving review, using memory fallback:', err);
+      }
+    }
+
+    const order = memoryDb.orders.find(o => o.id === orderId);
+    if (!order || order.customerId !== customerId) return res.status(404).json({ error: 'Order not found.' });
+    if (order.status !== 'Delivered') return res.status(400).json({ error: 'Only delivered orders can be rated.' });
+    if (order.rated) return res.status(400).json({ error: 'This order has already been rated.' });
+    memoryDb.reviews.push({ id: randomUUID(), orderId, customerId, restaurantId: order.restaurantId, rating: numericRating, comment, createdAt: new Date().toISOString() });
+    order.rated = true;
+    return res.json({ success: true });
+  });
+
+  // ===== Promo codes =====
+
+  app.post('/api/promo/validate', async (req, res) => {
+    const promo = await getPromoDiscount(req.body?.code);
+    if (!promo) return res.status(404).json({ valid: false, error: 'Invalid or expired promo code.' });
+    return res.json({ valid: true, code: promo.code, discountPercent: promo.discountPercent });
+  });
+
+  // ===== Business-configurable minimum order enforcement =====
+
+  app.post('/api/restaurants/:id/toggle-min-order-enforcement', async (req, res) => {
+    const { id } = req.params;
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const result = await pool.query('SELECT data FROM restaurants WHERE id = $1;', [id]);
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Restaurant not found.' });
+        const restaurant = result.rows[0].data as Restaurant;
+        restaurant.enforceMinOrder = !restaurant.enforceMinOrder;
+        await pool.query('UPDATE restaurants SET data = $1 WHERE id = $2;', [JSON.stringify(restaurant), id]);
+        return res.json({ success: true, enforceMinOrder: restaurant.enforceMinOrder, source: 'postgres' });
+      } catch (err) {
+        console.error('[PostgreSQL] Error toggling min-order enforcement, using memory fallback:', err);
+      }
+    }
+    // memoryDb.restaurants only gets populated by onboarding a new restaurant -
+    // getRestaurantCatalog() otherwise serves the UK_RESTAURANTS array directly
+    // (by reference), so mutating that same object is what makes the toggle
+    // actually stick for subsequent catalog fetches in memory-fallback mode.
+    // Deliberately NOT pushed into memoryDb.restaurants: once that array is
+    // non-empty, getRestaurantCatalog() switches to serving *only* it, which
+    // would truncate the catalog down to just this one restaurant.
+    const restaurant = memoryDb.restaurants.find(r => r.id === id) || UK_RESTAURANTS.find(r => r.id === id);
+    if (!restaurant) return res.status(404).json({ error: 'Restaurant not found.' });
+    restaurant.enforceMinOrder = !restaurant.enforceMinOrder;
+    return res.json({ success: true, enforceMinOrder: restaurant.enforceMinOrder, source: 'memory' });
+  });
+
+  // ===== Live order updates via Server-Sent Events (replaces client polling) =====
+  // Backed by Firebase Realtime Database so updates are durable and reach clients
+  // even if a write happened on a different server instance.
+  app.get('/api/orders/stream', async (req, res) => {
+    const sessionCustomerId = await getSessionCustomerId(req);
+    const queryCustomerId = typeof req.query.customerId === 'string' ? req.query.customerId : undefined;
+    const customerId = sessionCustomerId || queryCustomerId;
+    if (!customerId) {
+      return res.status(401).json({ error: 'A valid session or customerId is required to stream order updates.' });
+    }
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no'
+    });
+    res.write(': connected\n\n');
+
+    if (!sseClients.has(customerId)) sseClients.set(customerId, new Set());
+    sseClients.get(customerId)!.add(res);
+
+    const rtdbInstance = getRtdb();
+    const rtdbRef = rtdbInstance ? rtdbInstance.ref(`orderUpdates/${customerId}`) : null;
+    const rtdbListener = rtdbRef
+      ? rtdbRef.on('child_changed', (snapshot: any) => {
+          res.write(`data: ${JSON.stringify({ orders: [snapshot.val()] })}\n\n`);
+        })
+      : null;
+
+    const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 20000);
+
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      sseClients.get(customerId)?.delete(res);
+      if (rtdbRef && rtdbListener) rtdbRef.off('child_changed', rtdbListener);
+    });
   });
 
   // Health probe with actual database connection tests

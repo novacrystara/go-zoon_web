@@ -1,10 +1,26 @@
-import React, { useState } from 'react';
-import { Search, MapPin, ShoppingBag, Clock, Tag, Award, Check, ChevronLeft, Star, Phone, HelpCircle, Navigation, ShieldAlert, CreditCard, ClipboardList, History } from 'lucide-react';
-import { Restaurant, CartItem, Order, UKPostcodeZone, MenuItem, OrderStatus, CartCustomization } from '../../types';
+import React, { useState, useEffect } from 'react';
+import { Search, MapPin, ShoppingBag, Clock, Tag, Award, Check, ChevronLeft, Star, Phone, HelpCircle, Navigation, ShieldAlert, CreditCard, ClipboardList, History, User, LogOut, Plus, Bike, Store } from 'lucide-react';
+import { Restaurant, CartItem, Order, UKPostcodeZone, MenuItem, OrderStatus, CartCustomization, SavedAddress } from '../../types';
 import { validateUKPostcode } from '../../data/restaurants';
 import LegalModal from '../LegalModal';
+import PhoneLogin from '../PhoneLogin';
+import { fetchApi, StoredSession } from '../../api';
+
+interface CheckoutParams {
+  address: string;
+  postcode: string;
+  cardName: string;
+  restaurantId: string;
+  orderMode: 'Delivery' | 'Collection';
+  tip: number;
+  promoCode?: string;
+  promoDiscountPercent?: number;
+}
 
 interface GoZoonCustomerProps {
+  session: StoredSession | null;
+  onLoggedIn: (session: StoredSession) => void;
+  onLogout: () => void;
   restaurantsList: Restaurant[];
   currentPostcode: UKPostcodeZone;
   onPostcodeChange: (zone: UKPostcodeZone) => void;
@@ -12,7 +28,7 @@ interface GoZoonCustomerProps {
   onAddToCart: (item: CartItem) => void;
   onUpdateCartQuantity: (id: string, delta: number) => void;
   onRemoveCartItem: (id: string) => void;
-  onCheckout: (address: string, postcode: string, cardName: string, restaurantId: string) => Promise<{ success: boolean; error?: string }>;
+  onCheckout: (params: CheckoutParams) => Promise<{ success: boolean; error?: string }>;
   onCancelOrder: (orderId: string) => void;
   activeOrderId: string | null;
   onResetActiveOrder: () => void;
@@ -29,6 +45,9 @@ interface GoZoonCustomerProps {
 }
 
 export default function GoZoonCustomer({
+  session,
+  onLoggedIn,
+  onLogout,
   restaurantsList,
   currentPostcode,
   onPostcodeChange,
@@ -58,9 +77,32 @@ export default function GoZoonCustomer({
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isLegalOpen, setIsLegalOpen] = useState(false);
   const [isOrdersOpen, setIsOrdersOpen] = useState(false);
+  const [isAccountOpen, setIsAccountOpen] = useState(false);
   const [isChangingPostcode, setIsChangingPostcode] = useState(false);
   const [postcodeInput, setPostcodeInput] = useState(currentPostcode.postcode);
   const [postcodeError, setPostcodeError] = useState('');
+
+  // Saved addresses
+  const [addresses, setAddresses] = useState<SavedAddress[]>([]);
+  const [isAddingAddress, setIsAddingAddress] = useState(false);
+  const [newAddressLabel, setNewAddressLabel] = useState('Home');
+  const [newAddressLine, setNewAddressLine] = useState('');
+  const [newAddressPostcode, setNewAddressPostcode] = useState('');
+  const [selectedAddressId, setSelectedAddressId] = useState<string | null>(null);
+
+  // Promo code
+  const [promoCodeInput, setPromoCodeInput] = useState('');
+  const [appliedPromo, setAppliedPromo] = useState<{ code: string; discountPercent: number } | null>(null);
+  const [promoError, setPromoError] = useState('');
+
+  // Tip
+  const [tipAmount, setTipAmount] = useState(0);
+
+  // Post-delivery rating
+  const [ratingOrder, setRatingOrder] = useState<Order | null>(null);
+  const [ratingValue, setRatingValue] = useState(5);
+  const [ratingComment, setRatingComment] = useState('');
+  const [ratingSubmitting, setRatingSubmitting] = useState(false);
 
   // Stripe checkout state
   const [checkoutStep, setCheckoutStep] = useState<'cart' | 'stripe' | 'processing'>('cart');
@@ -76,6 +118,34 @@ export default function GoZoonCustomer({
   const [selectedOptions, setSelectedOptions] = useState<{ [key: string]: string }>({});
 
   const activeOrder = orders.find(o => o.id === activeOrderId);
+
+  // Load saved addresses once logged in.
+  useEffect(() => {
+    if (!session) return;
+    fetchApi('/api/addresses')
+      .then(res => res.json())
+      .then(data => {
+        if (data?.addresses) {
+          setAddresses(data.addresses);
+          const def = data.addresses.find((a: SavedAddress) => a.isDefault) || data.addresses[0];
+          if (def) {
+            setSelectedAddressId(def.id);
+            setDeliveryAddress(`${def.addressLine}, ${def.postcode}`);
+          }
+        }
+      })
+      .catch(err => console.error('[Addresses] Failed to load:', err));
+  }, [session]);
+
+  // Prompt for a rating the moment an order reaches Delivered and hasn't been rated yet.
+  useEffect(() => {
+    const toRate = orders.find(o => o.status === 'Delivered' && !o.rated);
+    if (toRate && !ratingOrder) {
+      setRatingOrder(toRate);
+      setRatingValue(5);
+      setRatingComment('');
+    }
+  }, [orders, ratingOrder]);
 
   // Sync postcode input
   React.useEffect(() => {
@@ -228,10 +298,22 @@ export default function GoZoonCustomer({
           setCheckoutStep('stripe');
           return;
         }
-        onCheckout(deliveryAddress, currentPostcode.postcode, stripeCardName, selectedRestaurant.id).then(result => {
+        onCheckout({
+          address: deliveryAddress,
+          postcode: currentPostcode.postcode,
+          cardName: stripeCardName,
+          restaurantId: selectedRestaurant.id,
+          orderMode,
+          tip: tipAmount,
+          promoCode: appliedPromo?.code,
+          promoDiscountPercent: appliedPromo?.discountPercent,
+        }).then(result => {
           if (result.success) {
             setIsCartOpen(false);
             setCheckoutStep('cart');
+            setTipAmount(0);
+            setAppliedPromo(null);
+            setPromoCodeInput('');
             // Clear card inputs
             setStripeCardName('');
             setStripeCardNum('');
@@ -264,18 +346,93 @@ export default function GoZoonCustomer({
     setCheckoutStep('cart');
   };
 
+  const handleAddAddress = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newAddressLine.trim() || !newAddressPostcode.trim()) return;
+    try {
+      const res = await fetchApi('/api/addresses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: newAddressLabel, addressLine: newAddressLine, postcode: newAddressPostcode, isDefault: addresses.length === 0 })
+      });
+      const data = await res.json();
+      if (data?.success && data.address) {
+        setAddresses(prev => [data.address, ...prev]);
+        setSelectedAddressId(data.address.id);
+        setDeliveryAddress(`${data.address.addressLine}, ${data.address.postcode}`);
+        setNewAddressLine('');
+        setNewAddressPostcode('');
+        setIsAddingAddress(false);
+      }
+    } catch (err) {
+      console.error('[Addresses] Failed to save:', err);
+    }
+  };
+
+  const handleDeleteAddress = async (id: string) => {
+    setAddresses(prev => prev.filter(a => a.id !== id));
+    try {
+      await fetchApi(`/api/addresses/${id}`, { method: 'DELETE' });
+    } catch (err) {
+      console.error('[Addresses] Failed to delete:', err);
+    }
+  };
+
+  const handleApplyPromo = async () => {
+    setPromoError('');
+    if (!promoCodeInput.trim()) return;
+    try {
+      const res = await fetchApi('/api/promo/validate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: promoCodeInput.trim() })
+      });
+      const data = await res.json();
+      if (data?.valid) {
+        setAppliedPromo({ code: data.code, discountPercent: data.discountPercent });
+      } else {
+        setAppliedPromo(null);
+        setPromoError(data.error || 'Invalid promo code.');
+      }
+    } catch {
+      setPromoError('Could not validate promo code. Please try again.');
+    }
+  };
+
+  const handleSubmitRating = async () => {
+    if (!ratingOrder) return;
+    setRatingSubmitting(true);
+    try {
+      const res = await fetchApi('/api/reviews', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId: ratingOrder.id, rating: ratingValue, comment: ratingComment.trim() || undefined })
+      });
+      if (res.ok) {
+        setRatingOrder(null);
+      }
+    } catch (err) {
+      console.error('[Reviews] Failed to submit rating:', err);
+    } finally {
+      setRatingSubmitting(false);
+    }
+  };
+
   // Calculations for basket
   const cartSubtotal = cart.reduce((acc, item) => {
     const customizationsCost = item.customizations.reduce((sum, c) => sum + c.additionalPrice, 0);
     return acc + (item.menuItem.price + customizationsCost) * item.quantity;
   }, 0);
 
-  const deliveryFee = selectedRestaurant
+  const isCollection = orderMode === 'Collection';
+  const deliveryFee = selectedRestaurant && !isCollection
     ? (selectedRestaurant.offersFreeDelivery ? 0 : Math.round((selectedRestaurant.deliveryFee * currentPostcode.deliveryMultiplier) * 100) / 100)
     : 0;
 
   const serviceFee = cartSubtotal > 0 ? Math.max(0.99, Math.round(cartSubtotal * 0.05 * 100) / 100) : 0;
-  const grandTotal = cartSubtotal + deliveryFee + serviceFee;
+  const discountAmount = appliedPromo ? Math.round(cartSubtotal * (appliedPromo.discountPercent / 100) * 100) / 100 : 0;
+  const belowMinOrder = !!(selectedRestaurant?.enforceMinOrder && cartSubtotal > 0 && cartSubtotal < selectedRestaurant.minOrder);
+  const grandTotal = Math.max(0, cartSubtotal - discountAmount + deliveryFee + serviceFee + tipAmount);
 
   const filteredRestaurants = restaurantsList.filter(restaurant => {
     const matchesSearch = searchQuery.trim() === '' || 
@@ -365,6 +522,10 @@ export default function GoZoonCustomer({
 
   const riderCoords = getPointAtLength(riderProgress / 100);
 
+  if (!session) {
+    return <PhoneLogin onLoggedIn={onLoggedIn} />;
+  }
+
   return (
     <div className="h-full bg-slate-50 flex flex-col overflow-y-auto no-scrollbar relative text-neutral-800 font-sans select-none" id="customer-phone-view">
       
@@ -421,6 +582,14 @@ export default function GoZoonCustomer({
                 {orders.length}
               </span>
             )}
+          </button>
+
+          <button
+            onClick={() => setIsAccountOpen(true)}
+            className="flex items-center justify-center p-1.5 bg-slate-100 hover:bg-slate-200 rounded-full text-slate-700 cursor-pointer"
+            title="Account"
+          >
+            <User className="w-4 h-4 text-brand-blue" />
           </button>
         </div>
       </div>
@@ -506,10 +675,14 @@ export default function GoZoonCustomer({
               </div>
             </div>
             <div className="grid grid-cols-2 gap-2">
-              <button className="h-8 rounded-lg border border-slate-200 text-slate-700 font-bold text-[10px] flex items-center justify-center gap-1 hover:bg-slate-50">
+              <a
+                href={activeOrder.driverPhone ? `tel:${activeOrder.driverPhone.replace(/\s+/g, '')}` : undefined}
+                aria-disabled={!activeOrder.driverPhone}
+                className={`h-8 rounded-lg border border-slate-200 text-slate-700 font-bold text-[10px] flex items-center justify-center gap-1 hover:bg-slate-50 ${!activeOrder.driverPhone ? 'opacity-50 pointer-events-none' : ''}`}
+              >
                 <Phone className="w-3 h-3 text-brand-blue" />
                 <span>Call Courier</span>
-              </button>
+              </a>
               <button
                 onClick={onResetActiveOrder}
                 className="h-8 rounded-lg bg-slate-100 text-slate-700 font-bold text-[10px] flex items-center justify-center gap-1 hover:bg-slate-200"
@@ -930,6 +1103,36 @@ export default function GoZoonCustomer({
                     <span className="font-bold text-slate-950">{selectedRestaurant.name}</span>
                   </div>
 
+                  {/* Delivery vs Collection */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onOrderModeChange('Delivery')}
+                      className={`h-9 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer ${
+                        orderMode === 'Delivery' ? 'border-brand-blue bg-brand-blue/5 text-brand-blue' : 'border-slate-200 text-slate-500'
+                      }`}
+                    >
+                      <Bike className="w-3.5 h-3.5" />
+                      <span>Delivery</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onOrderModeChange('Collection')}
+                      className={`h-9 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer ${
+                        orderMode === 'Collection' ? 'border-brand-blue bg-brand-blue/5 text-brand-blue' : 'border-slate-200 text-slate-500'
+                      }`}
+                    >
+                      <Store className="w-3.5 h-3.5" />
+                      <span>Collection</span>
+                    </button>
+                  </div>
+
+                  {belowMinOrder && (
+                    <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-2.5 text-[10px] font-semibold">
+                      This restaurant requires a minimum order of £{selectedRestaurant.minOrder.toFixed(2)}. Add £{(selectedRestaurant.minOrder - cartSubtotal).toFixed(2)} more to check out.
+                    </div>
+                  )}
+
                   {/* items */}
                   <div className="space-y-3">
                     {cart.map(item => (
@@ -953,20 +1156,76 @@ export default function GoZoonCustomer({
                     ))}
                   </div>
 
+                  {/* Promo code */}
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wide">Promo Code</label>
+                    <div className="flex gap-1.5">
+                      <input
+                        type="text"
+                        placeholder="e.g. CHIPPY10"
+                        value={promoCodeInput}
+                        onChange={(e) => { setPromoCodeInput(e.target.value.toUpperCase()); setPromoError(''); }}
+                        className="flex-1 h-9 px-2.5 border border-slate-200 rounded-lg text-[16px] uppercase"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleApplyPromo}
+                        className="px-3 h-9 bg-slate-900 text-white rounded-lg text-[11px] font-bold cursor-pointer"
+                      >
+                        Apply
+                      </button>
+                    </div>
+                    {appliedPromo && (
+                      <p className="text-[10px] text-emerald-600 font-bold">✓ {appliedPromo.code} applied - {appliedPromo.discountPercent}% off</p>
+                    )}
+                    {promoError && <p className="text-[10px] text-red-500 font-semibold">{promoError}</p>}
+                  </div>
+
+                  {/* Tip */}
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wide">Tip Your Courier</label>
+                    <div className="flex gap-1.5">
+                      {[0, 1, 2, 3].map(amount => (
+                        <button
+                          key={amount}
+                          type="button"
+                          onClick={() => setTipAmount(amount)}
+                          className={`flex-1 h-8 rounded-lg border text-xs font-bold cursor-pointer ${
+                            tipAmount === amount ? 'border-brand-blue bg-brand-blue/5 text-brand-blue' : 'border-slate-200 text-slate-500'
+                          }`}
+                        >
+                          {amount === 0 ? 'No Tip' : `£${amount}`}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
                   {/* Billing */}
                   <div className="space-y-1.5 text-slate-500 pt-2 border-t border-slate-100">
                     <div className="flex justify-between">
                       <span>Subtotal</span>
                       <span className="font-semibold text-slate-800">£{cartSubtotal.toFixed(2)}</span>
                     </div>
+                    {discountAmount > 0 && (
+                      <div className="flex justify-between text-emerald-600">
+                        <span>Promo Discount</span>
+                        <span className="font-semibold">-£{discountAmount.toFixed(2)}</span>
+                      </div>
+                    )}
                     <div className="flex justify-between">
-                      <span>Delivery Fee</span>
+                      <span>{isCollection ? 'Collection' : 'Delivery Fee'}</span>
                       <span className="font-semibold text-slate-800">{deliveryFee === 0 ? 'FREE' : `£${deliveryFee.toFixed(2)}`}</span>
                     </div>
                     <div className="flex justify-between">
                       <span>Platform Service Fee</span>
                       <span className="font-semibold text-slate-800">£{serviceFee.toFixed(2)}</span>
                     </div>
+                    {tipAmount > 0 && (
+                      <div className="flex justify-between">
+                        <span>Courier Tip</span>
+                        <span className="font-semibold text-slate-800">£{tipAmount.toFixed(2)}</span>
+                      </div>
+                    )}
                     <div className="flex justify-between font-extrabold text-slate-950 pt-2 border-t border-slate-200">
                       <span>Total</span>
                       <span>£{grandTotal.toFixed(2)}</span>
@@ -976,7 +1235,8 @@ export default function GoZoonCustomer({
                   {/* Stripe Checkout Transition */}
                   <button
                     onClick={() => setCheckoutStep('stripe')}
-                    className="w-full h-11 bg-brand-orange hover:bg-brand-orange/95 text-white font-black rounded-lg flex items-center justify-center gap-1.5 shadow-md"
+                    disabled={belowMinOrder}
+                    className="w-full h-11 bg-brand-orange hover:bg-brand-orange/95 text-white font-black rounded-lg flex items-center justify-center gap-1.5 shadow-md disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     <CreditCard className="w-4 h-4" />
                     <span>Secure Checkout with Stripe</span>
@@ -1007,16 +1267,44 @@ export default function GoZoonCustomer({
 
                   {/* Card fields */}
                   <div className="space-y-3">
-                    <div>
-                      <label className="block text-[10px] font-extrabold text-slate-500 uppercase tracking-wide mb-1">Delivery Address (London Zone)</label>
-                      <input
-                        type="text"
-                        required
-                        value={deliveryAddress}
-                        onChange={(e) => setDeliveryAddress(e.target.value)}
-                        className="w-full h-9 px-2.5 border border-slate-250 rounded-md bg-slate-50 text-[16px]"
-                      />
-                    </div>
+                    {isCollection ? (
+                      <div className="bg-slate-50 border border-slate-200 rounded-md p-2.5 text-[11px]">
+                        <span className="block text-[9px] font-extrabold text-slate-500 uppercase tracking-wide mb-0.5">Collecting From</span>
+                        <span className="font-bold text-slate-800">{selectedRestaurant.name}</span>
+                        <span className="block text-slate-500">{selectedRestaurant.address}</span>
+                      </div>
+                    ) : addresses.length > 0 ? (
+                      <div>
+                        <label className="block text-[10px] font-extrabold text-slate-500 uppercase tracking-wide mb-1">Delivery Address</label>
+                        <div className="space-y-1.5">
+                          {addresses.map(addr => (
+                            <button
+                              key={addr.id}
+                              type="button"
+                              onClick={() => { setSelectedAddressId(addr.id); setDeliveryAddress(`${addr.addressLine}, ${addr.postcode}`); }}
+                              className={`w-full text-left p-2 rounded-md border text-[11px] cursor-pointer ${
+                                selectedAddressId === addr.id ? 'border-brand-blue bg-brand-blue/5' : 'border-slate-200'
+                              }`}
+                            >
+                              <span className="font-bold text-slate-800">{addr.label}</span>
+                              <span className="block text-slate-500">{addr.addressLine}, {addr.postcode}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div>
+                        <label className="block text-[10px] font-extrabold text-slate-500 uppercase tracking-wide mb-1">Delivery Address (London Zone)</label>
+                        <input
+                          type="text"
+                          required
+                          value={deliveryAddress}
+                          onChange={(e) => setDeliveryAddress(e.target.value)}
+                          className="w-full h-9 px-2.5 border border-slate-250 rounded-md bg-slate-50 text-[16px]"
+                        />
+                        <p className="text-[9px] text-slate-400 mt-1">Tip: save addresses from your Account screen for faster checkout next time.</p>
+                      </div>
+                    )}
 
                     <div>
                       <label className="block text-[10px] font-extrabold text-slate-500 uppercase tracking-wide mb-1">Cardholder Name</label>
@@ -1252,6 +1540,144 @@ export default function GoZoonCustomer({
               )}
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* Account Drawer */}
+      {isAccountOpen && (
+        <div className="absolute inset-0 bg-black/60 backdrop-blur-xs z-40 flex flex-col justify-end">
+          <div className="absolute inset-0" onClick={() => setIsAccountOpen(false)}></div>
+          <div className="w-full bg-white rounded-t-2xl h-[85%] max-h-[85%] flex flex-col z-10 animate-in slide-in-from-bottom duration-300 text-xs">
+            <div className="p-3.5 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-2xl shrink-0">
+              <div className="flex items-center gap-1.5 font-black text-slate-900 text-sm">
+                <User className="w-4 h-4 text-brand-blue" />
+                <span>Account</span>
+              </div>
+              <button onClick={() => setIsAccountOpen(false)} className="text-xs font-bold text-slate-400 hover:text-slate-900 px-2 py-1 bg-slate-200/50 rounded-md cursor-pointer">
+                Close
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              <div className="bg-slate-50 border border-slate-150 rounded-xl p-3">
+                <span className="text-[9px] text-slate-400 uppercase font-bold tracking-wider block">Logged in as</span>
+                <span className="font-bold text-slate-900">{session.phone}</span>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex justify-between items-center">
+                  <h4 className="font-extrabold text-slate-800 text-xs">Saved Addresses</h4>
+                  <button
+                    onClick={() => setIsAddingAddress(!isAddingAddress)}
+                    className="flex items-center gap-1 text-[10px] font-bold text-brand-blue cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add</span>
+                  </button>
+                </div>
+
+                {isAddingAddress && (
+                  <form onSubmit={handleAddAddress} className="bg-slate-50 border border-slate-150 rounded-xl p-3 space-y-2">
+                    <input
+                      type="text"
+                      placeholder="Label (Home, Work...)"
+                      value={newAddressLabel}
+                      onChange={(e) => setNewAddressLabel(e.target.value)}
+                      className="w-full h-8 px-2.5 border border-slate-200 rounded-md text-[16px]"
+                    />
+                    <input
+                      type="text"
+                      required
+                      placeholder="Address line"
+                      value={newAddressLine}
+                      onChange={(e) => setNewAddressLine(e.target.value)}
+                      className="w-full h-8 px-2.5 border border-slate-200 rounded-md text-[16px]"
+                    />
+                    <input
+                      type="text"
+                      required
+                      placeholder="Postcode"
+                      value={newAddressPostcode}
+                      onChange={(e) => setNewAddressPostcode(e.target.value.toUpperCase())}
+                      className="w-full h-8 px-2.5 border border-slate-200 rounded-md text-[16px] uppercase"
+                    />
+                    <button type="submit" className="w-full h-8 bg-brand-orange text-white font-bold rounded-md text-[11px]">
+                      Save Address
+                    </button>
+                  </form>
+                )}
+
+                {addresses.length === 0 && !isAddingAddress ? (
+                  <p className="text-[10px] text-slate-400">No saved addresses yet.</p>
+                ) : (
+                  addresses.map(addr => (
+                    <div key={addr.id} className="flex items-center justify-between bg-white border border-slate-150 rounded-xl p-2.5">
+                      <div>
+                        <span className="font-bold text-slate-800 block">{addr.label}</span>
+                        <span className="text-slate-500 text-[10px]">{addr.addressLine}, {addr.postcode}</span>
+                      </div>
+                      <button onClick={() => handleDeleteAddress(addr.id)} className="text-[10px] text-red-500 font-bold cursor-pointer">Remove</button>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <button
+                onClick={() => { setIsAccountOpen(false); onLogout(); }}
+                className="w-full h-10 border border-red-200 text-red-600 font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Log Out</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Post-delivery rating prompt */}
+      {ratingOrder && (
+        <div className="absolute inset-0 bg-black/60 backdrop-blur-xs flex items-end z-50">
+          <div className="w-full bg-white rounded-t-2xl p-4 space-y-4 animate-in slide-in-from-bottom duration-200 text-xs">
+            <div>
+              <h4 className="font-black text-sm text-slate-900">How was your order?</h4>
+              <p className="text-[10px] text-slate-400 mt-0.5">{ratingOrder.restaurantName} • #{ratingOrder.id}</p>
+            </div>
+            <div className="flex justify-center gap-2">
+              {[1, 2, 3, 4, 5].map(n => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => setRatingValue(n)}
+                  className="cursor-pointer"
+                >
+                  <Star className={`w-8 h-8 ${n <= ratingValue ? 'text-amber-500 fill-amber-500' : 'text-slate-200'}`} />
+                </button>
+              ))}
+            </div>
+            <textarea
+              placeholder="Leave a comment (optional)"
+              value={ratingComment}
+              onChange={(e) => setRatingComment(e.target.value)}
+              className="w-full h-16 p-2.5 border border-slate-200 rounded-lg text-[16px] resize-none"
+            />
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setRatingOrder(null)}
+                className="w-24 h-10 border border-slate-200 text-slate-600 rounded-lg font-bold cursor-pointer"
+              >
+                Later
+              </button>
+              <button
+                type="button"
+                onClick={handleSubmitRating}
+                disabled={ratingSubmitting}
+                className="flex-1 h-10 bg-brand-orange text-white font-black rounded-lg shadow-md disabled:opacity-50 cursor-pointer"
+              >
+                {ratingSubmitting ? 'Submitting...' : 'Submit Rating'}
+              </button>
+            </div>
           </div>
         </div>
       )}
