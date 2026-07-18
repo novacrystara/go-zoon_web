@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, MapPin, ShoppingBag, Clock, Tag, Award, Check, ChevronLeft, Star, Phone, HelpCircle, Navigation, ShieldAlert, CreditCard, ClipboardList, History, User, LogOut, Plus, Bike, Store } from 'lucide-react';
+import { Search, MapPin, ShoppingBag, Clock, Tag, Award, Check, ChevronLeft, Star, Phone, HelpCircle, Navigation, ShieldAlert, CreditCard, ClipboardList, History, User, LogOut, Plus, Bike, Store, Trash2 } from 'lucide-react';
 import { Restaurant, CartItem, Order, UKPostcodeZone, MenuItem, OrderStatus, CartCustomization, SavedAddress } from '../../types';
 import { validateUKPostcode } from '../../data/restaurants';
 import LegalModal from '../LegalModal';
@@ -1145,6 +1145,14 @@ export default function GoZoonCustomer({
                             {item.customizations.map(c => `${c.name}: ${c.selectedOption}`).join(', ')}
                           </span>
                           {item.notes && <p className="text-[9px] text-amber-600 font-medium italic">&ldquo;{item.notes}&rdquo;</p>}
+                          <button
+                            type="button"
+                            onClick={() => onRemoveCartItem(item.id)}
+                            className="flex items-center gap-1 text-[9px] text-red-500 font-bold cursor-pointer pt-0.5"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            <span>Delete</span>
+                          </button>
                         </div>
                         <div className="text-right space-y-1">
                           <span className="font-bold text-slate-900 block">£{((item.menuItem.price + item.customizations.reduce((s,c)=>s+c.additionalPrice,0)) * item.quantity).toFixed(2)}</span>
