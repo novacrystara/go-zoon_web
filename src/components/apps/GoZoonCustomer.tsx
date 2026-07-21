@@ -166,9 +166,12 @@ export default function GoZoonCustomer({
   };
 
   const selectRestaurantSafely = (restaurant: Restaurant) => {
-    if (selectedRestaurant && selectedRestaurant.id !== restaurant.id && cart.length > 0) {
-      if (window.confirm('Clear your current basket and switch restaurants?')) {
-        // clear cart by removing all items
+    // Keyed off the cart's own restaurantId (not the transient selectedRestaurant view
+    // state) so this still catches a restaurant switch after the user has hit "back",
+    // which clears selectedRestaurant but leaves the basket populated.
+    const cartOwnerId = cart[0]?.restaurantId;
+    if (cartOwnerId && cartOwnerId !== restaurant.id) {
+      if (window.confirm(`Your basket has items from another restaurant. Clear your basket to order from ${restaurant.name}?`)) {
         cart.forEach(item => onRemoveCartItem(item.id));
         setSelectedRestaurant(restaurant);
       }
@@ -197,7 +200,7 @@ export default function GoZoonCustomer({
   };
 
   const handleConfirmCustomization = () => {
-    if (!customizingItem) return;
+    if (!customizingItem || !selectedRestaurant) return;
 
     const customizations: CartCustomization[] = [];
     let extraPrice = 0;
@@ -246,6 +249,7 @@ export default function GoZoonCustomer({
 
     const cartItem: CartItem = {
       id: itemCartId,
+      restaurantId: selectedRestaurant.id,
       menuItem: customizingItem,
       quantity: 1,
       customizations,
@@ -340,7 +344,7 @@ export default function GoZoonCustomer({
       setSelectedRestaurant(rest);
     }
     order.items.forEach(item => {
-      onAddToCart(item);
+      onAddToCart({ ...item, restaurantId: order.restaurantId });
     });
     setIsOrdersOpen(false);
     setIsCartOpen(true);

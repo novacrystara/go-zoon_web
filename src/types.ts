@@ -47,6 +47,7 @@ export interface CartCustomization {
 
 export interface CartItem {
   id: string; // Unique id for cart instance (item id + selections hash)
+  restaurantId: string;
   menuItem: MenuItem;
   quantity: number;
   customizations: CartCustomization[];
