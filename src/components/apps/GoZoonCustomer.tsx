@@ -6,6 +6,34 @@ import LegalModal from '../LegalModal';
 import PhoneLogin from '../PhoneLogin';
 import { fetchApi, StoredSession } from '../../api';
 
+const SEARCH_PLACEHOLDER_EXAMPLES = ['Seafood', 'Curry', 'Burgers', 'Roast Dinner', 'Kebab', 'Pizza'];
+
+// Isolated in its own component so the rotating placeholder's interval only
+// re-renders this input, not the whole (large) restaurant browsing screen.
+function SearchBar({ value, onChange }: { value: string; onChange: (v: string) => void }): React.JSX.Element {
+  const [placeholderIdx, setPlaceholderIdx] = useState(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setPlaceholderIdx(prev => (prev + 1) % SEARCH_PLACEHOLDER_EXAMPLES.length);
+    }, 2500);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <div className="relative">
+      <input
+        type="text"
+        placeholder={`Search for "${SEARCH_PLACEHOLDER_EXAMPLES[placeholderIdx]}"`}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full h-9 pl-9 pr-3 bg-slate-100 hover:bg-slate-200/80 rounded-lg text-[16px] outline-hidden focus:bg-white focus:ring-1 focus:ring-brand-blue"
+      />
+      <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
+    </div>
+  );
+}
+
 interface CheckoutParams {
   address: string;
   postcode: string;
@@ -867,16 +895,7 @@ export default function GoZoonCustomer({
 
           {/* Search Bar inside App */}
           <div className="px-3 pb-2 flex-shrink-0">
-            <div className="relative">
-              <input
-                type="text"
-                placeholder="Search cod, roasts, curries..."
-                value={searchQuery}
-                onChange={(e) => onSearchQueryChange(e.target.value)}
-                className="w-full h-9 pl-9 pr-3 bg-slate-100 hover:bg-slate-200/80 rounded-lg text-[16px] outline-hidden focus:bg-white focus:ring-1 focus:ring-brand-blue"
-              />
-              <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
-            </div>
+            <SearchBar value={searchQuery} onChange={onSearchQueryChange} />
           </div>
 
           {/* Restaurant Cards list inside mobile frame */}
