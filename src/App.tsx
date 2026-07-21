@@ -8,6 +8,17 @@ import { UK_RESTAURANTS, UK_POSTCODES } from './data/restaurants';
 import { Restaurant, CartItem, Order, UKPostcodeZone, OrderStatus, MenuItem } from './types';
 import { Smartphone, Store, Bike, Landmark, Info, Sparkles, Server, ShieldCheck, CreditCard, Activity, Wifi, Battery, Settings } from 'lucide-react';
 import { getApiUrl, fetchApi, getStoredSession, setStoredSession, clearStoredSession, StoredSession } from './api';
+import { Capacitor } from '@capacitor/core';
+import { StatusBar, Style } from '@capacitor/status-bar';
+
+// Background polling fetches new data every few seconds regardless of whether it
+// actually changed. Setting state with a fresh array/object reference every tick
+// forces a full re-render of the active app (no memoization anywhere in this
+// codebase) even when nothing changed, which is what causes scroll/nav jank -
+// bailing out here keeps the previous reference so React skips the re-render.
+function updateIfChanged<T>(setter: React.Dispatch<React.SetStateAction<T>>, next: T) {
+  setter(prev => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+}
 
 export default function App(): React.JSX.Element {
   // 1. Core State Synchronization (LocalStorage Keys with Rebranded Gozoon prefixes)
@@ -121,6 +132,21 @@ export default function App(): React.JSX.Element {
     return null;
   });
 
+  // Newer Android target SDKs force edge-to-edge layout (no opt-out), so the
+  // WebView draws under the status bar by default and the header ends up behind
+  // it. Telling the native status bar not to overlay the WebView makes Android
+  // reserve space for it instead, like it always did before edge-to-edge became
+  // mandatory. No-op on web/iOS.
+  useEffect(() => {
+    if (Capacitor.isNativePlatform()) {
+      StatusBar.setOverlaysWebView({ overlay: false }).catch(() => {});
+      // Match the app's white header so the status bar reads as part of it,
+      // with dark icons/text since the background is light.
+      StatusBar.setBackgroundColor({ color: '#ffffff' }).catch(() => {});
+      StatusBar.setStyle({ style: Style.Light }).catch(() => {});
+    }
+  }, []);
+
   // Sandbox hub / business / road king / admin views need visibility across all
   // orders to operate and have no login system yet, so they keep polling.
   useEffect(() => {
@@ -130,7 +156,7 @@ export default function App(): React.JSX.Element {
         .then(res => res.json())
         .then(data => {
           if (data && data.orders) {
-            setOrders(data.orders);
+            updateIfChanged(setOrders, data.orders);
           }
         })
         .catch(err => {
@@ -179,7 +205,7 @@ export default function App(): React.JSX.Element {
       fetchApi('/api/orders')
         .then(res => res.json())
         .then(data => {
-          if (!cancelled && data?.orders) setOrders(data.orders);
+          if (!cancelled && data?.orders) updateIfChanged(setOrders, data.orders);
         })
         .catch(() => {});
     }, 30000);
@@ -199,9 +225,9 @@ export default function App(): React.JSX.Element {
       fetchApi('/api/restaurants')
         .then(res => res.json())
         .then(data => {
-          if (data?.restaurants) setRestaurantsList(data.restaurants);
-          if (data?.closedRestaurants) setClosedRestaurants(data.closedRestaurants);
-          if (data?.outOfStockItems) setOutOfStockItems(data.outOfStockItems);
+          if (data?.restaurants) updateIfChanged(setRestaurantsList, data.restaurants);
+          if (data?.closedRestaurants) updateIfChanged(setClosedRestaurants, data.closedRestaurants);
+          if (data?.outOfStockItems) updateIfChanged(setOutOfStockItems, data.outOfStockItems);
         })
         .catch(err => {
           console.error('[Restaurants] Failed to fetch shared catalog/business state:', err);
@@ -217,7 +243,7 @@ export default function App(): React.JSX.Element {
     fetchApi('/api/drivers')
       .then(res => res.json())
       .then(data => {
-        if (data?.drivers && data.drivers.length > 0) setDrivers(data.drivers);
+        if (data?.drivers && data.drivers.length > 0) updateIfChanged(setDrivers, data.drivers);
       })
       .catch(err => {
         console.error('[Drivers] Failed to fetch shared driver roster:', err);

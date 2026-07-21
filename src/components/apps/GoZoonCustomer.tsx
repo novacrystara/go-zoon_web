@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Search, MapPin, ShoppingBag, Clock, Tag, Award, Check, ChevronLeft, Star, Phone, HelpCircle, Navigation, ShieldAlert, CreditCard, ClipboardList, History, User, LogOut, Plus, Bike, Store, Trash2 } from 'lucide-react';
 import { Restaurant, CartItem, Order, UKPostcodeZone, MenuItem, OrderStatus, CartCustomization, SavedAddress } from '../../types';
 import { validateUKPostcode } from '../../data/restaurants';
@@ -440,8 +440,12 @@ export default function GoZoonCustomer({
   const belowMinOrder = !!(selectedRestaurant?.enforceMinOrder && cartSubtotal > 0 && cartSubtotal < selectedRestaurant.minOrder);
   const grandTotal = Math.max(0, cartSubtotal - discountAmount + deliveryFee + serviceFee + tipAmount);
 
-  const filteredRestaurants = restaurantsList.filter(restaurant => {
-    const matchesSearch = searchQuery.trim() === '' || 
+  // Filters over every restaurant's full menu (.some() + .toLowerCase() per item) -
+  // memoized so background polling re-renders and unrelated state changes (e.g.
+  // typing in the cart's promo code field) don't force this to recompute from
+  // scratch, which was showing up as scroll/navigation jank.
+  const filteredRestaurants = useMemo(() => restaurantsList.filter(restaurant => {
+    const matchesSearch = searchQuery.trim() === '' ||
       restaurant.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       restaurant.cuisine.toLowerCase().includes(searchQuery.toLowerCase()) ||
       restaurant.menu.some(item => item.name.toLowerCase().includes(searchQuery.toLowerCase()));
@@ -478,7 +482,7 @@ export default function GoZoonCustomer({
     }
 
     return matchesSearch && matchesFilter && matchesHeroCategory;
-  });
+  }), [restaurantsList, searchQuery, activeFilter, selectedCategoryHero, currentPostcode]);
 
   // SVG Bezier Rider calculation for Tracker
   const [riderProgress, setRiderProgress] = useState(0);
