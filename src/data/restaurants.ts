@@ -57,7 +57,7 @@ export const UK_RESTAURANTS: Restaurant[] = [
         name: 'Battered Jumbo Sausage',
         description: 'Pork sausage dipped in chipshop batter and fried till crispy.',
         price: 3.50,
-        image: 'https://images.unsplash.com/photo-1541048619-2e177306bf5c?auto=format&fit=crop&w=300&q=80',
+        image: 'https://images.unsplash.com/photo-1778449521139-8c4a3f6273c5?auto=format&fit=crop&w=300&q=80',
         category: 'Mains'
       },
       {
@@ -101,7 +101,7 @@ export const UK_RESTAURANTS: Restaurant[] = [
         name: 'Half Roast Norfolk Chicken',
         description: 'Lemon & herb basted roasted chicken, served with roast potatoes, Yorkshire pudding, seasonal vegetables, and sage & onion stuffing.',
         price: 15.50,
-        image: 'https://images.unsplash.com/photo-1598515214211-89d3e73ae83b?auto=format&fit=crop&w=300&q=80',
+        image: 'https://images.unsplash.com/photo-1670398564097-0762e1b30b3a?auto=format&fit=crop&w=300&q=80',
         category: 'Sunday Roast Specials'
       },
       {
@@ -354,7 +354,7 @@ export const UK_RESTAURANTS: Restaurant[] = [
         name: 'Authentic Hummus & Pita',
         description: 'Creamy pureed chickpeas with sesame tahini, fresh lemon juice, garlic, and olive oil, served with warm clay-baked flatbread.',
         price: 4.95,
-        image: 'https://images.unsplash.com/photo-1577906096429-f73bc2f32363?auto=format&fit=crop&w=300&q=80',
+        image: 'https://images.unsplash.com/photo-1591299177061-2151e53fcaea?auto=format&fit=crop&w=300&q=80',
         category: 'Appetizers',
         dietary: ['Vegetarian', 'Vegan']
       },
