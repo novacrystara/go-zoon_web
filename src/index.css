@@ -39,6 +39,15 @@
   margin-bottom: env(safe-area-inset-bottom, 0px);
 }
 
+/* Tailwind v4's default ::placeholder rule uses color-mix(in oklab, ...), which
+   some Android System WebView builds fail to render (placeholder ends up fully
+   transparent instead of falling back). Override with a plain, unambiguous color
+   so placeholders stay visible on every WebView/browser. */
+::placeholder {
+  color: #94a3b8;
+  opacity: 1;
+}
+
 /* Base style resets and beautiful animations */
 body {
   font-family: var(--font-sans);
