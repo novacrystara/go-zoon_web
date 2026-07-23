@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Search, MapPin, ShoppingBag, Clock, Tag, Award, Check, ChevronLeft, Star, Phone, HelpCircle, Navigation, ShieldAlert, CreditCard, ClipboardList, History, User, LogOut, Plus, Bike, Store, Trash2 } from 'lucide-react';
-import { Restaurant, CartItem, Order, UKPostcodeZone, MenuItem, OrderStatus, CartCustomization, SavedAddress } from '../../types';
+import { Search, MapPin, ShoppingBag, Clock, Tag, Award, Check, ChevronLeft, ChevronDown, Star, Phone, HelpCircle, Navigation, ShieldAlert, CreditCard, ClipboardList, History, User, LogOut, Plus, Bike, Store, Trash2, Leaf, SlidersHorizontal, Info, Bell, MessageSquare, Flame } from 'lucide-react';
+import { Restaurant, CartItem, Order, UKPostcodeZone, MenuItem, OrderStatus, CartCustomization, SavedAddress, Review } from '../../types';
 import { validateUKPostcode } from '../../data/restaurants';
 import LegalModal from '../LegalModal';
 import PhoneLogin from '../PhoneLogin';
@@ -146,6 +146,90 @@ export default function GoZoonCustomer({
   // Selected custom sizes or extras
   const [selectedOptions, setSelectedOptions] = useState<{ [key: string]: string }>({});
 
+  // Restaurant browsing sort order
+  const [sortBy, setSortBy] = useState<'Recommended' | 'Rating' | 'Fastest' | 'Price'>('Recommended');
+
+  // Restaurant page: in-menu search, category filter, veg-only filter, info panel
+  const [restaurantSearchQuery, setRestaurantSearchQuery] = useState('');
+  const [selectedMenuCategory, setSelectedMenuCategory] = useState<string | null>(null);
+  const [vegOnly, setVegOnly] = useState(false);
+  const [isRestaurantInfoOpen, setIsRestaurantInfoOpen] = useState(false);
+  const [restaurantReviews, setRestaurantReviews] = useState<Review[]>([]);
+
+  // Reset restaurant-page-scoped filters whenever the selected restaurant changes,
+  // and load its individual reviews (not just the aggregate rating/count).
+  useEffect(() => {
+    setRestaurantSearchQuery('');
+    setSelectedMenuCategory(null);
+    setVegOnly(false);
+    setIsRestaurantInfoOpen(false);
+    setRestaurantReviews([]);
+    if (!selectedRestaurant) return;
+    fetchApi(`/api/restaurants/${selectedRestaurant.id}/reviews`)
+      .then(res => res.json())
+      .then(data => {
+        if (data?.reviews) setRestaurantReviews(data.reviews);
+      })
+      .catch(err => console.error('[Reviews] Failed to load restaurant reviews:', err));
+  }, [selectedRestaurant?.id]);
+
+  // Profile: display name + notification preferences
+  const [profileName, setProfileName] = useState('');
+  const [profileNameInput, setProfileNameInput] = useState('');
+  const [notifyOrderUpdates, setNotifyOrderUpdates] = useState(true);
+  const [notifyPromotions, setNotifyPromotions] = useState(true);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileSaved, setProfileSaved] = useState(false);
+
+  useEffect(() => {
+    if (!session) return;
+    fetchApi('/api/profile')
+      .then(res => res.json())
+      .then(data => {
+        setProfileName(data?.name || '');
+        setProfileNameInput(data?.name || '');
+        setNotifyOrderUpdates(data?.notifyOrderUpdates !== false);
+        setNotifyPromotions(data?.notifyPromotions !== false);
+      })
+      .catch(err => console.error('[Profile] Failed to load:', err));
+  }, [session]);
+
+  const handleSaveProfileName = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setProfileSaving(true);
+    setProfileSaved(false);
+    try {
+      const res = await fetchApi('/api/profile', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: profileNameInput.trim() })
+      });
+      const data = await res.json();
+      if (data?.success) {
+        setProfileName(data.name || '');
+        setProfileSaved(true);
+      }
+    } catch (err) {
+      console.error('[Profile] Failed to save name:', err);
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
+  const handleToggleNotification = (key: 'notifyOrderUpdates' | 'notifyPromotions') => {
+    const nextValue = key === 'notifyOrderUpdates' ? !notifyOrderUpdates : !notifyPromotions;
+    if (key === 'notifyOrderUpdates') setNotifyOrderUpdates(nextValue);
+    else setNotifyPromotions(nextValue);
+    fetchApi('/api/profile', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [key]: nextValue })
+    }).catch(err => console.error('[Profile] Failed to save notification setting:', err));
+  };
+
+  // Post-delivery courier rating (separate from the restaurant rating)
+  const [courierRatingValue, setCourierRatingValue] = useState(5);
+
   const activeOrder = orders.find(o => o.id === activeOrderId);
 
   // Load saved addresses once logged in.
@@ -172,6 +256,7 @@ export default function GoZoonCustomer({
     if (toRate && !ratingOrder) {
       setRatingOrder(toRate);
       setRatingValue(5);
+      setCourierRatingValue(5);
       setRatingComment('');
     }
   }, [orders, ratingOrder, dismissedRatingIds]);
@@ -436,10 +521,16 @@ export default function GoZoonCustomer({
     if (!ratingOrder) return;
     setRatingSubmitting(true);
     try {
+      const canRateCourier = ratingOrder.orderMode === 'Delivery' && !!ratingOrder.driverName;
       const res = await fetchApi('/api/reviews', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orderId: ratingOrder.id, rating: ratingValue, comment: ratingComment.trim() || undefined })
+        body: JSON.stringify({
+          orderId: ratingOrder.id,
+          rating: ratingValue,
+          courierRating: canRateCourier ? courierRatingValue : undefined,
+          comment: ratingComment.trim() || undefined
+        })
       });
       if (res.ok) {
         setDismissedRatingIds(prev => new Set(prev).add(ratingOrder.id));
@@ -467,6 +558,9 @@ export default function GoZoonCustomer({
   const discountAmount = appliedPromo ? Math.round(cartSubtotal * (appliedPromo.discountPercent / 100) * 100) / 100 : 0;
   const belowMinOrder = !!(selectedRestaurant?.enforceMinOrder && cartSubtotal > 0 && cartSubtotal < selectedRestaurant.minOrder);
   const grandTotal = Math.max(0, cartSubtotal - discountAmount + deliveryFee + serviceFee + tipAmount);
+  // Informational only - mirrors the server's VAT breakdown (see computeServerTotal in
+  // server.ts). Not added on top of the total: UK menu prices are treated as VAT-inclusive.
+  const vatIncluded = cartSubtotal > 0 ? Math.round((cartSubtotal - discountAmount) * 0.2 * 100) / 100 : 0;
 
   // Filters over every restaurant's full menu (.some() + .toLowerCase() per item) -
   // memoized so background polling re-renders and unrelated state changes (e.g.
@@ -511,6 +605,71 @@ export default function GoZoonCustomer({
 
     return matchesSearch && matchesFilter && matchesHeroCategory;
   }), [restaurantsList, searchQuery, activeFilter, selectedCategoryHero, currentPostcode]);
+
+  // Average menu item price used as a "Price" sort proxy - restaurants don't carry
+  // a single price point of their own, only per-dish prices.
+  const avgMenuPrice = (restaurant: Restaurant) =>
+    restaurant.menu.length > 0 ? restaurant.menu.reduce((sum, item) => sum + item.price, 0) / restaurant.menu.length : 0;
+
+  const sortedRestaurants = useMemo(() => {
+    if (sortBy === 'Recommended') return filteredRestaurants;
+    const list = [...filteredRestaurants];
+    if (sortBy === 'Rating') {
+      list.sort((a, b) => b.rating - a.rating);
+    } else if (sortBy === 'Fastest') {
+      list.sort((a, b) => (a.deliveryTimeRange[0] * currentPostcode.deliveryMultiplier) - (b.deliveryTimeRange[0] * currentPostcode.deliveryMultiplier));
+    } else if (sortBy === 'Price') {
+      list.sort((a, b) => avgMenuPrice(a) - avgMenuPrice(b));
+    }
+    return list;
+  }, [filteredRestaurants, sortBy, currentPostcode]);
+
+  const showDiscoverySections = !searchQuery.trim() && !selectedCategoryHero && activeFilter === 'All';
+  const featuredRestaurants = restaurantsList.filter(r => r.featured);
+  const recentlyOrderedRestaurants = useMemo(() => {
+    const seen = new Set<string>();
+    const list: Restaurant[] = [];
+    for (const order of orders) {
+      if (seen.has(order.restaurantId)) continue;
+      const rest = restaurantsList.find(r => r.id === order.restaurantId);
+      if (rest) {
+        seen.add(order.restaurantId);
+        list.push(rest);
+      }
+      if (list.length >= 8) break;
+    }
+    return list;
+  }, [orders, restaurantsList]);
+
+  // Restaurant page: menu filtered by in-menu search, category, and veg-only, then
+  // grouped by category so items render in labeled sections instead of one flat list.
+  const menuCategories = useMemo(() => {
+    if (!selectedRestaurant) return [];
+    return Array.from(new Set(selectedRestaurant.menu.map(item => item.category)));
+  }, [selectedRestaurant]);
+
+  const isVegItem = (item: MenuItem) => !!item.dietary?.some(d => d === 'Vegetarian' || d === 'Vegan');
+
+  const filteredGroupedMenu = useMemo(() => {
+    if (!selectedRestaurant) return [] as { category: string; items: MenuItem[] }[];
+    const q = restaurantSearchQuery.trim().toLowerCase();
+    const matches = selectedRestaurant.menu.filter(item => {
+      const matchesQuery = q === '' || item.name.toLowerCase().includes(q) || item.description.toLowerCase().includes(q);
+      const matchesCategory = !selectedMenuCategory || item.category === selectedMenuCategory;
+      const matchesVeg = !vegOnly || isVegItem(item);
+      return matchesQuery && matchesCategory && matchesVeg;
+    });
+    const groups: { category: string; items: MenuItem[] }[] = [];
+    menuCategories.forEach(category => {
+      const items = matches.filter(item => item.category === category);
+      if (items.length > 0) groups.push({ category, items });
+    });
+    return groups;
+  }, [selectedRestaurant, restaurantSearchQuery, selectedMenuCategory, vegOnly, menuCategories]);
+
+  const restaurantEstimatedTime = selectedRestaurant
+    ? `${Math.round(selectedRestaurant.deliveryTimeRange[0] * currentPostcode.deliveryMultiplier)}-${Math.round(selectedRestaurant.deliveryTimeRange[1] * currentPostcode.deliveryMultiplier)} min`
+    : '';
 
   // SVG Bezier Rider calculation for Tracker
   const [riderProgress, setRiderProgress] = useState(0);
@@ -786,22 +945,51 @@ export default function GoZoonCustomer({
           </div>
 
           {/* Restaurant details */}
-          <div className="p-3 border-b border-slate-100 text-xs text-slate-500 flex justify-between items-center bg-slate-50/50 flex-shrink-0">
-            <div className="flex items-center gap-1 font-bold text-slate-700">
-              <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
-              <span>{selectedRestaurant.rating} ({selectedRestaurant.reviewsCount})</span>
+          <div className="border-b border-slate-100 bg-slate-50/50 flex-shrink-0">
+            <div className="p-3 text-xs text-slate-500 flex justify-between items-center">
+              <div className="flex items-center gap-1 font-bold text-slate-700">
+                <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
+                <span>{selectedRestaurant.rating} ({selectedRestaurant.reviewsCount})</span>
+              </div>
+              <div className="flex items-center gap-1 font-semibold">
+                <Clock className="w-3.5 h-3.5 text-slate-400" />
+                <span>{Math.round(selectedRestaurant.deliveryTimeRange[0] * currentPostcode.deliveryMultiplier)} min</span>
+              </div>
+              <div className="font-bold text-brand-blue">
+                {selectedRestaurant.offersFreeDelivery ? 'Free Delivery' : `£${(selectedRestaurant.deliveryFee * currentPostcode.deliveryMultiplier).toFixed(2)} del`}
+              </div>
             </div>
-            <div className="flex items-center gap-1 font-semibold">
-              <Clock className="w-3.5 h-3.5 text-slate-400" />
-              <span>{Math.round(selectedRestaurant.deliveryTimeRange[0] * currentPostcode.deliveryMultiplier)} min</span>
-            </div>
-            <div className="font-bold text-brand-blue">
-              {selectedRestaurant.offersFreeDelivery ? 'Free Delivery' : `£${(selectedRestaurant.deliveryFee * currentPostcode.deliveryMultiplier).toFixed(2)} del`}
-            </div>
+
+            <button
+              onClick={() => setIsRestaurantInfoOpen(!isRestaurantInfoOpen)}
+              className="w-full px-3 pb-2 flex items-center justify-between text-[10px] font-bold text-slate-500 cursor-pointer"
+            >
+              <span className="flex items-center gap-1">
+                <Info className="w-3 h-3 text-slate-400" />
+                <span>Restaurant Info</span>
+              </span>
+              <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${isRestaurantInfoOpen ? 'rotate-180' : ''}`} />
+            </button>
+
+            {isRestaurantInfoOpen && (
+              <div className="px-3 pb-3 space-y-2 text-[10.5px] text-slate-600 leading-relaxed">
+                {selectedRestaurant.about && <p>{selectedRestaurant.about}</p>}
+                <div className="flex items-start gap-1.5">
+                  <MapPin className="w-3 h-3 text-brand-orange mt-0.5 flex-shrink-0" />
+                  <span>{selectedRestaurant.address}</span>
+                </div>
+                {selectedRestaurant.openingHours && (
+                  <div className="flex items-start gap-1.5">
+                    <Clock className="w-3 h-3 text-brand-orange mt-0.5 flex-shrink-0" />
+                    <span>{selectedRestaurant.openingHours}</span>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Menu Items List */}
-          <div className="flex-1 overflow-y-auto p-3 space-y-3.5">
+          <div className="flex-1 overflow-y-auto p-3 space-y-4">
             {closedRestaurants.includes(selectedRestaurant.id) ? (
               <div className="p-6 text-center text-red-500 bg-red-50/50 border border-red-100 rounded-xl space-y-2">
                 <ShieldAlert className="w-10 h-10 mx-auto opacity-75" />
@@ -809,30 +997,133 @@ export default function GoZoonCustomer({
                 <p className="text-[11px] text-red-400">The merchant has toggled their kitchen offline in the Business App. Please choose another spot.</p>
               </div>
             ) : (
-              selectedRestaurant.menu.map(item => {
-                const isOutOfStock = outOfStockItems.includes(item.id);
-                return (
-                  <div
-                    key={item.id}
-                    onClick={() => handleOpenCustomizer(item)}
-                    className={`flex gap-3 pb-3 border-b border-slate-100 last:border-none cursor-pointer group select-none ${isOutOfStock ? 'opacity-50 cursor-not-allowed' : ''}`}
+              <>
+                {/* In-menu search */}
+                <div className="relative">
+                  <input
+                    type="text"
+                    placeholder={`Search ${selectedRestaurant.name}'s menu`}
+                    value={restaurantSearchQuery}
+                    onChange={(e) => setRestaurantSearchQuery(e.target.value)}
+                    className="w-full h-8 pl-8 pr-3 bg-slate-100 rounded-lg text-[16px] outline-hidden focus:bg-white focus:ring-1 focus:ring-brand-blue"
+                  />
+                  <Search className="absolute left-2.5 top-2 w-3.5 h-3.5 text-slate-400" />
+                </div>
+
+                {/* Category + veg filter chips */}
+                <div className="flex gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+                  <button
+                    onClick={() => setSelectedMenuCategory(null)}
+                    className={`px-2.5 py-1 text-[10px] font-extrabold rounded-full transition-all cursor-pointer flex-shrink-0 ${
+                      selectedMenuCategory === null ? 'bg-brand-blue text-white' : 'bg-slate-100 text-slate-600'
+                    }`}
                   >
-                    <div className="flex-1 space-y-1">
-                      <div className="flex items-center gap-1.5">
-                        <h4 className="font-bold text-xs text-slate-800 group-hover:text-brand-blue transition-colors">{item.name}</h4>
-                        {isOutOfStock && <span className="text-[8px] bg-red-100 text-red-600 px-1 py-0.2 rounded-sm font-black">OUT OF STOCK</span>}
-                      </div>
-                      <p className="text-[10px] text-slate-400 line-clamp-2 leading-snug">{item.description}</p>
-                      <span className="font-black text-xs text-slate-900 block pt-1">£{item.price.toFixed(2)}</span>
-                    </div>
-                    {item.image && (
-                      <div className="w-16 h-16 rounded-lg overflow-hidden border border-slate-100 flex-shrink-0">
-                        <img src={item.image} alt="" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
-                      </div>
-                    )}
+                    All
+                  </button>
+                  {menuCategories.map(category => (
+                    <button
+                      key={category}
+                      onClick={() => setSelectedMenuCategory(category === selectedMenuCategory ? null : category)}
+                      className={`px-2.5 py-1 text-[10px] font-extrabold rounded-full transition-all cursor-pointer flex-shrink-0 ${
+                        selectedMenuCategory === category ? 'bg-brand-blue text-white' : 'bg-slate-100 text-slate-600'
+                      }`}
+                    >
+                      {category}
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => setVegOnly(!vegOnly)}
+                    className={`px-2.5 py-1 text-[10px] font-extrabold rounded-full transition-all cursor-pointer flex-shrink-0 flex items-center gap-1 ${
+                      vegOnly ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-600'
+                    }`}
+                  >
+                    <Leaf className="w-3 h-3" />
+                    <span>Veg Only</span>
+                  </button>
+                </div>
+
+                {filteredGroupedMenu.length === 0 ? (
+                  <div className="py-10 text-center text-slate-400 space-y-1.5">
+                    <ShieldAlert className="w-7 h-7 text-slate-300 mx-auto" />
+                    <p className="text-[11px] font-semibold">No dishes match your search/filters.</p>
                   </div>
-                );
-              })
+                ) : (
+                  filteredGroupedMenu.map(group => (
+                    <div key={group.category} className="space-y-3">
+                      <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-wider pt-1">{group.category}</h4>
+                      <div className="space-y-3.5">
+                        {group.items.map(item => {
+                          const isOutOfStock = outOfStockItems.includes(item.id);
+                          const isVeg = isVegItem(item);
+                          return (
+                            <div
+                              key={item.id}
+                              onClick={() => handleOpenCustomizer(item)}
+                              className={`flex gap-3 pb-3 border-b border-slate-100 last:border-none cursor-pointer group select-none ${isOutOfStock ? 'opacity-50 cursor-not-allowed' : ''}`}
+                            >
+                              <div className="flex-1 space-y-1">
+                                <div className="flex items-center gap-1.5">
+                                  <span
+                                    title={isVeg ? 'Vegetarian/Vegan' : 'Non-Vegetarian'}
+                                    className={`w-3 h-3 flex-shrink-0 border-2 rounded-[2px] flex items-center justify-center ${isVeg ? 'border-emerald-600' : 'border-red-600'}`}
+                                  >
+                                    <span className={`w-1.5 h-1.5 rounded-full ${isVeg ? 'bg-emerald-600' : 'bg-red-600'}`}></span>
+                                  </span>
+                                  <h4 className="font-bold text-xs text-slate-800 group-hover:text-brand-blue transition-colors">{item.name}</h4>
+                                  {isOutOfStock && <span className="text-[8px] bg-red-100 text-red-600 px-1 py-0.2 rounded-sm font-black">OUT OF STOCK</span>}
+                                </div>
+                                <p className="text-[10px] text-slate-400 line-clamp-2 leading-snug">{item.description}</p>
+                                <div className="flex items-center gap-2 pt-1">
+                                  <span className="font-black text-xs text-slate-900">£{item.price.toFixed(2)}</span>
+                                  {item.nutrition && (
+                                    <span className="flex items-center gap-0.5 text-[9px] font-semibold text-slate-400">
+                                      <Flame className="w-2.5 h-2.5" />
+                                      {item.nutrition.calories} kcal
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              {item.image && (
+                                <div className="w-16 h-16 rounded-lg overflow-hidden border border-slate-100 flex-shrink-0">
+                                  <img src={item.image} alt="" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))
+                )}
+
+                {/* Reviews */}
+                <div className="pt-2 border-t border-slate-100 space-y-2.5">
+                  <div className="flex items-center gap-1.5">
+                    <MessageSquare className="w-3.5 h-3.5 text-brand-blue" />
+                    <h4 className="font-extrabold text-xs text-slate-800">Reviews</h4>
+                    <span className="text-[9px] text-slate-400 font-semibold">({selectedRestaurant.reviewsCount} total)</span>
+                  </div>
+                  {restaurantReviews.length === 0 ? (
+                    <p className="text-[10px] text-slate-400">No written reviews yet - be the first to rate this restaurant after your order.</p>
+                  ) : (
+                    <div className="space-y-2.5">
+                      {restaurantReviews.map(review => (
+                        <div key={review.id} className="bg-slate-50 border border-slate-100 rounded-lg p-2.5 space-y-1">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-0.5">
+                              {[1, 2, 3, 4, 5].map(n => (
+                                <Star key={n} className={`w-3 h-3 ${n <= review.rating ? 'text-amber-500 fill-amber-500' : 'text-slate-200'}`} />
+                              ))}
+                            </div>
+                            <span className="text-[9px] text-slate-400 font-semibold">{new Date(review.createdAt).toLocaleDateString()}</span>
+                          </div>
+                          {review.comment && <p className="text-[10.5px] text-slate-600 leading-snug">{review.comment}</p>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
             )}
           </div>
         </div>
@@ -848,6 +1139,61 @@ export default function GoZoonCustomer({
             </div>
             <div className="text-2xl">🐟</div>
           </div>
+
+          {/* Recently Ordered - restaurants derived from this customer's own order history */}
+          {showDiscoverySections && recentlyOrderedRestaurants.length > 0 && (
+            <div className="p-3 bg-white border-b border-slate-100 flex-shrink-0">
+              <div className="flex items-center gap-1.5 mb-2">
+                <History className="w-3.5 h-3.5 text-brand-blue" />
+                <h3 className="font-extrabold text-xs text-slate-800">Recently Ordered</h3>
+              </div>
+              <div className="flex gap-2.5 overflow-x-auto no-scrollbar">
+                {recentlyOrderedRestaurants.map(rest => (
+                  <button
+                    key={rest.id}
+                    onClick={() => selectRestaurantSafely(rest)}
+                    className="flex-shrink-0 w-24 text-left cursor-pointer group"
+                  >
+                    <div className="w-24 h-16 rounded-lg overflow-hidden border border-slate-150 bg-slate-100">
+                      {rest.image && <img src={rest.image} alt={rest.name} referrerPolicy="no-referrer" className="w-full h-full object-cover" />}
+                    </div>
+                    <span className="block text-[10px] font-bold text-slate-700 truncate mt-1 group-hover:text-brand-blue">{rest.name}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Featured Restaurants */}
+          {showDiscoverySections && featuredRestaurants.length > 0 && (
+            <div className="p-3 bg-white border-b border-slate-100 flex-shrink-0">
+              <div className="flex items-center gap-1.5 mb-2">
+                <Award className="w-3.5 h-3.5 text-brand-orange" />
+                <h3 className="font-extrabold text-xs text-slate-800">Featured Restaurants</h3>
+              </div>
+              <div className="flex gap-2.5 overflow-x-auto no-scrollbar">
+                {featuredRestaurants.map(rest => (
+                  <button
+                    key={rest.id}
+                    onClick={() => selectRestaurantSafely(rest)}
+                    className="flex-shrink-0 w-36 text-left cursor-pointer group bg-slate-50 rounded-xl border border-slate-150 overflow-hidden hover:border-brand-blue/40 transition-all"
+                  >
+                    <div className="w-36 h-20 bg-slate-150 relative">
+                      {rest.image && <img src={rest.image} alt={rest.name} referrerPolicy="no-referrer" className="w-full h-full object-cover" />}
+                      <span className="absolute top-1.5 left-1.5 bg-brand-orange text-white text-[8px] font-black px-1.5 py-0.3 rounded-full uppercase">Featured</span>
+                    </div>
+                    <div className="p-2 space-y-0.5">
+                      <span className="block text-[10px] font-bold text-slate-800 truncate group-hover:text-brand-blue">{rest.name}</span>
+                      <span className="flex items-center gap-0.5 text-[9px] font-semibold text-amber-500">
+                        <Star className="w-2.5 h-2.5 fill-amber-500" />
+                        {rest.rating}
+                      </span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Quick Categories horizontal carousel */}
           <div className="p-3 bg-white border-b border-slate-100 flex gap-2 overflow-x-auto no-scrollbar flex-shrink-0">
@@ -876,14 +1222,14 @@ export default function GoZoonCustomer({
           </div>
 
           {/* Filter Chips row */}
-          <div className="p-3 flex gap-1.5 overflow-x-auto no-scrollbar flex-shrink-0">
+          <div className="p-3 pb-1.5 flex gap-1.5 overflow-x-auto no-scrollbar flex-shrink-0">
             {['All', 'Offers', 'Top Rated', 'Fastest'].map(filter => {
               const isSelected = activeFilter === filter;
               return (
                 <button
                   key={filter}
                   onClick={() => onFilterChange(filter)}
-                  className={`px-2.5 py-1 text-[10px] font-extrabold rounded-full transition-all cursor-pointer ${
+                  className={`px-2.5 py-1 text-[10px] font-extrabold rounded-full transition-all cursor-pointer flex-shrink-0 ${
                     isSelected ? 'bg-brand-orange text-white shadow-xs' : 'bg-slate-200/60 text-slate-600 hover:bg-slate-200'
                   }`}
                 >
@@ -893,6 +1239,22 @@ export default function GoZoonCustomer({
             })}
           </div>
 
+          {/* Sort control */}
+          <div className="px-3 pb-2 flex items-center gap-1.5 flex-shrink-0">
+            <SlidersHorizontal className="w-3 h-3 text-slate-400 flex-shrink-0" />
+            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wide flex-shrink-0">Sort</span>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+              className="text-[10px] font-bold text-slate-700 bg-slate-100 rounded-full px-2 py-1 outline-hidden cursor-pointer border-none"
+            >
+              <option value="Recommended">Recommended</option>
+              <option value="Rating">Rating: High to Low</option>
+              <option value="Fastest">Delivery Time: Fastest</option>
+              <option value="Price">Price: Low to High</option>
+            </select>
+          </div>
+
           {/* Search Bar inside App */}
           <div className="px-3 pb-2 flex-shrink-0">
             <SearchBar value={searchQuery} onChange={onSearchQueryChange} />
@@ -900,14 +1262,14 @@ export default function GoZoonCustomer({
 
           {/* Restaurant Cards list inside mobile frame */}
           <div className="flex-1 overflow-y-auto p-3 space-y-3">
-            {filteredRestaurants.length === 0 ? (
+            {sortedRestaurants.length === 0 ? (
               <div className="py-12 text-center text-slate-400 space-y-2 bg-white rounded-xl border border-slate-100">
                 <ShieldAlert className="w-8 h-8 text-slate-300 mx-auto" />
                 <p className="font-bold text-xs text-slate-800">No restaurants near you</p>
                 <p className="text-[10px] max-w-[200px] mx-auto text-slate-400">Try changing your search query or reset filters.</p>
               </div>
             ) : (
-              filteredRestaurants.map(rest => {
+              sortedRestaurants.map(rest => {
                 const isClosed = closedRestaurants.includes(rest.id);
                 return (
                   <div
@@ -980,6 +1342,28 @@ export default function GoZoonCustomer({
               </div>
               <button onClick={() => setCustomizingItem(null)} className="text-slate-400 hover:text-black font-bold">Close</button>
             </div>
+
+            {/* Nutritional info (optional per-dish data) */}
+            {customizingItem.nutrition && (
+              <div className="grid grid-cols-4 gap-1.5 bg-slate-50 border border-slate-100 rounded-lg p-2.5">
+                <div className="text-center">
+                  <span className="block font-black text-slate-900 text-xs">{customizingItem.nutrition.calories}</span>
+                  <span className="block text-[8px] font-bold text-slate-400 uppercase">kcal</span>
+                </div>
+                <div className="text-center">
+                  <span className="block font-black text-slate-900 text-xs">{customizingItem.nutrition.protein}g</span>
+                  <span className="block text-[8px] font-bold text-slate-400 uppercase">Protein</span>
+                </div>
+                <div className="text-center">
+                  <span className="block font-black text-slate-900 text-xs">{customizingItem.nutrition.carbs}g</span>
+                  <span className="block text-[8px] font-bold text-slate-400 uppercase">Carbs</span>
+                </div>
+                <div className="text-center">
+                  <span className="block font-black text-slate-900 text-xs">{customizingItem.nutrition.fat}g</span>
+                  <span className="block text-[8px] font-bold text-slate-400 uppercase">Fat</span>
+                </div>
+              </div>
+            )}
 
             {/* Customizer Option */}
             {customizingItem.options && customizingItem.options.length > 0 ? (
@@ -1156,6 +1540,13 @@ export default function GoZoonCustomer({
                     </button>
                   </div>
 
+                  <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-100 rounded-lg px-2.5 py-2 text-[10.5px] text-slate-600 font-semibold">
+                    <Clock className="w-3.5 h-3.5 text-brand-orange flex-shrink-0" />
+                    <span>
+                      {isCollection ? 'Ready for collection in' : 'Estimated delivery'} <b className="text-slate-900">{restaurantEstimatedTime}</b>
+                    </span>
+                  </div>
+
                   {belowMinOrder && (
                     <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-2.5 text-[10px] font-semibold">
                       This restaurant requires a minimum order of £{selectedRestaurant.minOrder.toFixed(2)}. Add £{(selectedRestaurant.minOrder - cartSubtotal).toFixed(2)} more to check out.
@@ -1257,6 +1648,12 @@ export default function GoZoonCustomer({
                       <span>Platform Service Fee</span>
                       <span className="font-semibold text-slate-800">£{serviceFee.toFixed(2)}</span>
                     </div>
+                    {vatIncluded > 0 && (
+                      <div className="flex justify-between text-slate-400">
+                        <span>VAT (20%, included in prices)</span>
+                        <span className="font-semibold">£{vatIncluded.toFixed(2)}</span>
+                      </div>
+                    )}
                     {tipAmount > 0 && (
                       <div className="flex justify-between">
                         <span>Courier Tip</span>
@@ -1599,7 +1996,65 @@ export default function GoZoonCustomer({
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
               <div className="bg-slate-50 border border-slate-150 rounded-xl p-3">
                 <span className="text-[9px] text-slate-400 uppercase font-bold tracking-wider block">Logged in as</span>
-                <span className="font-bold text-slate-900">{session.phone}</span>
+                <span className="font-bold text-slate-900">{profileName || session.phone}</span>
+                {profileName && <span className="block text-[10px] text-slate-400">{session.phone}</span>}
+              </div>
+
+              <form onSubmit={handleSaveProfileName} className="space-y-2">
+                <h4 className="font-extrabold text-slate-800 text-xs">Your Name</h4>
+                <div className="flex gap-1.5">
+                  <input
+                    type="text"
+                    placeholder="Add your name"
+                    value={profileNameInput}
+                    onChange={(e) => { setProfileNameInput(e.target.value); setProfileSaved(false); }}
+                    maxLength={100}
+                    className="flex-1 h-8 px-2.5 border border-slate-200 rounded-md text-[16px]"
+                  />
+                  <button
+                    type="submit"
+                    disabled={profileSaving || profileNameInput.trim() === profileName}
+                    className="px-3 h-8 bg-slate-900 text-white rounded-md text-[11px] font-bold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {profileSaving ? 'Saving...' : 'Save'}
+                  </button>
+                </div>
+                {profileSaved && <p className="text-[10px] text-emerald-600 font-bold">✓ Name updated</p>}
+              </form>
+
+              <div className="space-y-2">
+                <div className="flex items-center gap-1.5">
+                  <Bell className="w-3.5 h-3.5 text-brand-blue" />
+                  <h4 className="font-extrabold text-slate-800 text-xs">Notification Settings</h4>
+                </div>
+                <div className="bg-white border border-slate-150 rounded-xl divide-y divide-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => handleToggleNotification('notifyOrderUpdates')}
+                    className="w-full flex items-center justify-between p-2.5 cursor-pointer"
+                  >
+                    <div className="text-left">
+                      <span className="block font-bold text-slate-800 text-[11px]">Order Updates</span>
+                      <span className="block text-[9px] text-slate-400">Status changes, delivery tracking</span>
+                    </div>
+                    <span className={`w-9 h-5 rounded-full relative transition-colors flex-shrink-0 ${notifyOrderUpdates ? 'bg-brand-blue' : 'bg-slate-200'}`}>
+                      <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow-xs transition-all ${notifyOrderUpdates ? 'left-4.5' : 'left-0.5'}`}></span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleToggleNotification('notifyPromotions')}
+                    className="w-full flex items-center justify-between p-2.5 cursor-pointer"
+                  >
+                    <div className="text-left">
+                      <span className="block font-bold text-slate-800 text-[11px]">Promotions & Offers</span>
+                      <span className="block text-[9px] text-slate-400">Deals, discount codes, new restaurants</span>
+                    </div>
+                    <span className={`w-9 h-5 rounded-full relative transition-colors flex-shrink-0 ${notifyPromotions ? 'bg-brand-blue' : 'bg-slate-200'}`}>
+                      <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow-xs transition-all ${notifyPromotions ? 'left-4.5' : 'left-0.5'}`}></span>
+                    </span>
+                  </button>
+                </div>
               </div>
 
               <div className="space-y-2">
@@ -1680,18 +2135,39 @@ export default function GoZoonCustomer({
               <h4 className="font-black text-sm text-slate-900">How was your order?</h4>
               <p className="text-[10px] text-slate-400 mt-0.5">{ratingOrder.restaurantName} • #{ratingOrder.id}</p>
             </div>
-            <div className="flex justify-center gap-2">
-              {[1, 2, 3, 4, 5].map(n => (
-                <button
-                  key={n}
-                  type="button"
-                  onClick={() => setRatingValue(n)}
-                  className="cursor-pointer"
-                >
-                  <Star className={`w-8 h-8 ${n <= ratingValue ? 'text-amber-500 fill-amber-500' : 'text-slate-200'}`} />
-                </button>
-              ))}
+            <div className="space-y-1.5">
+              <p className="text-center text-[10px] font-bold text-slate-500 uppercase tracking-wide">Rate the restaurant</p>
+              <div className="flex justify-center gap-2">
+                {[1, 2, 3, 4, 5].map(n => (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => setRatingValue(n)}
+                    className="cursor-pointer"
+                  >
+                    <Star className={`w-8 h-8 ${n <= ratingValue ? 'text-amber-500 fill-amber-500' : 'text-slate-200'}`} />
+                  </button>
+                ))}
+              </div>
             </div>
+
+            {ratingOrder.orderMode === 'Delivery' && ratingOrder.driverName && (
+              <div className="space-y-1.5 border-t border-slate-100 pt-3">
+                <p className="text-center text-[10px] font-bold text-slate-500 uppercase tracking-wide">Rate your courier, {ratingOrder.driverName.split(' ')[0]}</p>
+                <div className="flex justify-center gap-2">
+                  {[1, 2, 3, 4, 5].map(n => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => setCourierRatingValue(n)}
+                      className="cursor-pointer"
+                    >
+                      <Star className={`w-8 h-8 ${n <= courierRatingValue ? 'text-brand-blue fill-brand-blue' : 'text-slate-200'}`} />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             <textarea
               placeholder="Leave a comment (optional)"
               value={ratingComment}

@@ -17,6 +17,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
     featured: true,
     offersFreeDelivery: false,
     discountOffer: 'Save 10% on orders over £20',
+    about: 'A Westminster institution since 1974, The Royal Cod & Chippy fries fresh Atlantic cod and Maris Piper potatoes in small batches all day, using a traditional beer batter recipe passed down through three generations.',
+    openingHours: 'Mon-Sat 11:30 - 22:00, Sun 12:00 - 21:00',
     menu: [
       {
         id: 'r1-m1',
@@ -24,7 +26,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         description: 'Fresh Atlantic cod in crispy golden beer batter, served with twice-cooked Maris Piper chips, lemon wedge, and homemade tartare sauce.',
         price: 13.50,
         image: 'https://images.unsplash.com/photo-1579871494447-9811cf80d66c?auto=format&fit=crop&w=300&q=80',
-        category: 'Mains'
+        category: 'Mains',
+        nutrition: { calories: 820, protein: 42, carbs: 78, fat: 38 }
       },
       {
         id: 'r1-m2',
@@ -32,7 +35,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         description: 'Large flaky lines-caught Haddock battered to perfection, served with standard chips.',
         price: 14.20,
         image: 'https://images.unsplash.com/photo-1534422298391-e4f8c172dddb?auto=format&fit=crop&w=300&q=80',
-        category: 'Mains'
+        category: 'Mains',
+        nutrition: { calories: 870, protein: 45, carbs: 80, fat: 41 }
       },
       {
         id: 'r1-m3',
@@ -41,7 +45,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         price: 1.80,
         image: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&w=300&q=80',
         category: 'Sides',
-        dietary: ['Vegetarian', 'Vegan', 'Gluten-Free']
+        dietary: ['Vegetarian', 'Vegan', 'Gluten-Free'],
+        nutrition: { calories: 130, protein: 8, carbs: 20, fat: 1 }
       },
       {
         id: 'r1-m4',
@@ -50,7 +55,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         price: 1.80,
         image: 'https://images.unsplash.com/photo-1588166524941-3bf61a9c41db?auto=format&fit=crop&w=300&q=80',
         category: 'Sides',
-        dietary: ['Vegetarian']
+        dietary: ['Vegetarian'],
+        nutrition: { calories: 95, protein: 1, carbs: 12, fat: 4 }
       },
       {
         id: 'r1-m5',
@@ -58,7 +64,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         description: 'Pork sausage dipped in chipshop batter and fried till crispy.',
         price: 3.50,
         image: 'https://images.unsplash.com/photo-1778449521139-8c4a3f6273c5?auto=format&fit=crop&w=300&q=80',
-        category: 'Mains'
+        category: 'Mains',
+        nutrition: { calories: 340, protein: 14, carbs: 18, fat: 24 }
       },
       {
         id: 'r1-m6',
@@ -67,7 +74,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         price: 5.95,
         image: 'https://images.unsplash.com/photo-1606313564200-e75d5e30476c?auto=format&fit=crop&w=300&q=80',
         category: 'Desserts',
-        dietary: ['Vegetarian']
+        dietary: ['Vegetarian'],
+        nutrition: { calories: 560, protein: 5, carbs: 78, fat: 25 }
       }
     ]
   },
@@ -87,6 +95,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
     featured: true,
     offersFreeDelivery: true,
     discountOffer: 'Free Delivery on orders over £15',
+    about: 'A cosy Camden gastropub serving proper Sunday roasts every day of the week - dry-aged meats, dripping-roasted potatoes, and giant Yorkshire puddings, in a dining room built around a 200-year-old oak bar.',
+    openingHours: 'Mon-Fri 12:00 - 21:30, Sat-Sun 12:00 - 20:00',
     menu: [
       {
         id: 'r2-m1',
@@ -94,7 +104,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         description: '28-day dry-aged Aberdeen Angus roast beef, crispy beef-fat roast potatoes, dynamic giant Yorkshire pudding, honey-glazed parsnips, buttered seasonal greens, and a rich red-wine gravy.',
         price: 17.95,
         image: 'https://images.unsplash.com/photo-1544025162-d76694265947?auto=format&fit=crop&w=300&q=80',
-        category: 'Sunday Roast Specials'
+        category: 'Sunday Roast Specials',
+        nutrition: { calories: 980, protein: 58, carbs: 62, fat: 48 }
       },
       {
         id: 'r2-m2',
@@ -102,7 +113,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         description: 'Lemon & herb basted roasted chicken, served with roast potatoes, Yorkshire pudding, seasonal vegetables, and sage & onion stuffing.',
         price: 15.50,
         image: 'https://images.unsplash.com/photo-1670398564097-0762e1b30b3a?auto=format&fit=crop&w=300&q=80',
-        category: 'Sunday Roast Specials'
+        category: 'Sunday Roast Specials',
+        nutrition: { calories: 870, protein: 62, carbs: 55, fat: 38 }
       },
       {
         id: 'r2-m3',
@@ -111,7 +123,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         price: 14.50,
         image: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&w=300&q=80',
         category: 'Sunday Roast Specials',
-        dietary: ['Vegetarian']
+        dietary: ['Vegetarian'],
+        nutrition: { calories: 720, protein: 22, carbs: 68, fat: 38 }
       },
       {
         id: 'r2-m4',
@@ -120,7 +133,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         price: 2.00,
         image: 'https://images.unsplash.com/photo-1626082927389-6cd097cdc6ec?auto=format&fit=crop&w=300&q=80',
         category: 'Extras',
-        dietary: ['Vegetarian']
+        dietary: ['Vegetarian'],
+        nutrition: { calories: 210, protein: 7, carbs: 24, fat: 9 }
       },
       {
         id: 'r2-m5',
@@ -129,7 +143,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         price: 5.50,
         image: 'https://images.unsplash.com/photo-1508737804141-4c3b688e2546?auto=format&fit=crop&w=300&q=80',
         category: 'Desserts',
-        dietary: ['Vegetarian']
+        dietary: ['Vegetarian'],
+        nutrition: { calories: 490, protein: 5, carbs: 71, fat: 20 }
       }
     ]
   },
@@ -149,6 +164,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
     featured: true,
     offersFreeDelivery: false,
     discountOffer: 'Spend £25, get a free Garlic Naan',
+    about: 'Brick Lane Curry Club has been slow-cooking British-Bangladeshi curries on the same stretch of Brick Lane for over 20 years, hand-grinding its own spice blends fresh every morning.',
+    openingHours: 'Daily 12:00 - 23:00',
     menu: [
       {
         id: 'r3-m1',
@@ -157,7 +174,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         price: 12.95,
         image: 'https://images.unsplash.com/photo-1565557623262-b51c2513a641?auto=format&fit=crop&w=300&q=80',
         category: 'Curries',
-        dietary: ['Halal']
+        dietary: ['Halal'],
+        nutrition: { calories: 690, protein: 46, carbs: 24, fat: 42 }
       },
       {
         id: 'r3-m2',
@@ -166,7 +184,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         price: 13.95,
         image: 'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=300&q=80',
         category: 'Curries',
-        dietary: ['Halal']
+        dietary: ['Halal'],
+        nutrition: { calories: 720, protein: 44, carbs: 20, fat: 48 }
       },
       {
         id: 'r3-m3',
@@ -175,7 +194,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         price: 6.50,
         image: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&w=300&q=80',
         category: 'Sides',
-        dietary: ['Vegetarian', 'Vegan', 'Gluten-Free']
+        dietary: ['Vegetarian', 'Vegan', 'Gluten-Free'],
+        nutrition: { calories: 310, protein: 16, carbs: 38, fat: 10 }
       },
       {
         id: 'r3-m4',
@@ -184,7 +204,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         price: 3.20,
         image: 'https://images.unsplash.com/photo-1533777857889-4be7c70b33f7?auto=format&fit=crop&w=300&q=80',
         category: 'Breads',
-        dietary: ['Vegetarian']
+        dietary: ['Vegetarian'],
+        nutrition: { calories: 280, protein: 8, carbs: 46, fat: 7 }
       },
       {
         id: 'r3-m5',
@@ -193,7 +214,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         price: 3.50,
         image: 'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=300&q=80',
         category: 'Rice',
-        dietary: ['Vegetarian', 'Gluten-Free']
+        dietary: ['Vegetarian', 'Gluten-Free'],
+        nutrition: { calories: 340, protein: 6, carbs: 62, fat: 8 }
       }
     ]
   },
@@ -213,6 +235,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
     featured: false,
     offersFreeDelivery: false,
     discountOffer: 'Sweet Treat: Buy 2 Scones, Get 1 Free',
+    about: 'A light-filled Kensington bakery specialising in traditional English afternoon tea - scones baked in small batches every couple of hours, hand-cut sandwiches, and single-origin loose leaf tea.',
+    openingHours: 'Mon-Sun 08:00 - 18:00',
     menu: [
       {
         id: 'r4-m1',
@@ -221,7 +245,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         price: 14.50,
         image: 'https://images.unsplash.com/photo-1576092768241-dec231879fc3?auto=format&fit=crop&w=300&q=80',
         category: 'High Tea Sets',
-        dietary: ['Vegetarian']
+        dietary: ['Vegetarian'],
+        nutrition: { calories: 780, protein: 20, carbs: 84, fat: 40 }
       },
       {
         id: 'r4-m2',
@@ -230,7 +255,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         price: 2.80,
         image: 'https://images.unsplash.com/photo-1555507036-ab1f4038808a?auto=format&fit=crop&w=300&q=80',
         category: 'Bakery',
-        dietary: ['Vegetarian']
+        dietary: ['Vegetarian'],
+        nutrition: { calories: 340, protein: 7, carbs: 34, fat: 20 }
       },
       {
         id: 'r4-m3',
@@ -239,7 +265,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         price: 5.20,
         image: 'https://images.unsplash.com/photo-1509440159596-0249088772ff?auto=format&fit=crop&w=300&q=80',
         category: 'Bakery',
-        dietary: ['Vegetarian']
+        dietary: ['Vegetarian'],
+        nutrition: { calories: 520, protein: 8, carbs: 60, fat: 27 }
       },
       {
         id: 'r4-m4',
@@ -247,7 +274,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         description: 'Rich double shot of espresso with silky microfoam milk, prepared by our master barista.',
         price: 3.60,
         image: 'https://images.unsplash.com/photo-1541167760496-1628856ab772?auto=format&fit=crop&w=300&q=80',
-        category: 'Drinks'
+        category: 'Drinks',
+        nutrition: { calories: 130, protein: 7, carbs: 10, fat: 7 }
       },
       {
         id: 'r4-m5',
@@ -256,7 +284,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         price: 3.10,
         image: 'https://images.unsplash.com/photo-1576092768241-dec231879fc3?auto=format&fit=crop&w=300&q=80',
         category: 'Drinks',
-        dietary: ['Vegetarian', 'Vegan', 'Gluten-Free']
+        dietary: ['Vegetarian', 'Vegan', 'Gluten-Free'],
+        nutrition: { calories: 20, protein: 0, carbs: 3, fat: 0 }
       }
     ]
   },
@@ -276,6 +305,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
     featured: false,
     offersFreeDelivery: true,
     discountOffer: 'Spend £18, get free Rosemary Fries',
+    about: 'Born as a Borough Market street stall, Big Borough Burger Co. grinds its own dry-aged British beef daily and now serves the same smash-grilled patties from a permanent Southwark Street kitchen.',
+    openingHours: 'Mon-Sun 11:00 - 22:30',
     menu: [
       {
         id: 'r5-m1',
@@ -283,7 +314,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         description: 'Two dry-aged British beef patties, double melted West Country cheddar, pickle, minced onions, and house burger relish in a toasted brioche bun.',
         price: 11.50,
         image: 'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?auto=format&fit=crop&w=300&q=80',
-        category: 'Burgers'
+        category: 'Burgers',
+        nutrition: { calories: 890, protein: 48, carbs: 42, fat: 56 }
       },
       {
         id: 'r5-m2',
@@ -292,7 +324,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         price: 12.00,
         image: 'https://images.unsplash.com/photo-1626082927389-6cd097cdc6ec?auto=format&fit=crop&w=300&q=80',
         category: 'Burgers',
-        dietary: ['Halal']
+        dietary: ['Halal'],
+        nutrition: { calories: 820, protein: 40, carbs: 58, fat: 44 }
       },
       {
         id: 'r5-m3',
@@ -301,7 +334,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         price: 3.95,
         image: 'https://images.unsplash.com/photo-1573080496219-bb080dd4f877?auto=format&fit=crop&w=300&q=80',
         category: 'Sides',
-        dietary: ['Vegetarian', 'Vegan', 'Gluten-Free']
+        dietary: ['Vegetarian', 'Vegan', 'Gluten-Free'],
+        nutrition: { calories: 420, protein: 6, carbs: 54, fat: 20 }
       },
       {
         id: 'r5-m4',
@@ -310,7 +344,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         price: 5.50,
         image: 'https://images.unsplash.com/photo-1543339308-43e59d6b73a6?auto=format&fit=crop&w=300&q=80',
         category: 'Sides',
-        dietary: ['Vegetarian']
+        dietary: ['Vegetarian'],
+        nutrition: { calories: 610, protein: 22, carbs: 52, fat: 36 }
       }
     ]
   },
@@ -330,6 +365,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
     featured: false,
     offersFreeDelivery: false,
     discountOffer: '£3 off when you spend £20',
+    about: 'Run by the Yilmaz family since 1998, Istanbul Kebab House roasts lamb and chicken on a traditional vertical spit and bakes its own flatbread throughout service on Green Lanes.',
+    openingHours: 'Mon-Sun 12:00 - 23:30',
     menu: [
       {
         id: 'r6-m1',
@@ -338,7 +375,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         price: 10.95,
         image: 'https://images.unsplash.com/photo-1529193591184-b1d58069ecdd?auto=format&fit=crop&w=300&q=80',
         category: 'Wraps & Kebabs',
-        dietary: ['Halal']
+        dietary: ['Halal'],
+        nutrition: { calories: 760, protein: 38, carbs: 62, fat: 38 }
       },
       {
         id: 'r6-m2',
@@ -347,7 +385,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         price: 13.50,
         image: 'https://images.unsplash.com/photo-1544025162-d76694265947?auto=format&fit=crop&w=300&q=80',
         category: 'Wraps & Kebabs',
-        dietary: ['Halal']
+        dietary: ['Halal'],
+        nutrition: { calories: 680, protein: 52, carbs: 58, fat: 24 }
       },
       {
         id: 'r6-m3',
@@ -356,7 +395,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         price: 4.95,
         image: 'https://images.unsplash.com/photo-1591299177061-2151e53fcaea?auto=format&fit=crop&w=300&q=80',
         category: 'Appetizers',
-        dietary: ['Vegetarian', 'Vegan']
+        dietary: ['Vegetarian', 'Vegan'],
+        nutrition: { calories: 390, protein: 12, carbs: 48, fat: 17 }
       },
       {
         id: 'r6-m4',
@@ -365,7 +405,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
         price: 4.50,
         image: 'https://images.unsplash.com/photo-1508737804141-4c3b688e2546?auto=format&fit=crop&w=300&q=80',
         category: 'Desserts',
-        dietary: ['Vegetarian']
+        dietary: ['Vegetarian'],
+        nutrition: { calories: 430, protein: 6, carbs: 46, fat: 26 }
       }
     ]
   }

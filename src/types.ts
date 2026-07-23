@@ -8,6 +8,13 @@ export interface MenuItemOption {
   }[];
 }
 
+export interface NutritionInfo {
+  calories: number; // kcal per serving
+  protein: number; // grams
+  carbs: number; // grams
+  fat: number; // grams
+}
+
 export interface MenuItem {
   id: string;
   name: string;
@@ -17,6 +24,7 @@ export interface MenuItem {
   category: string;
   dietary?: ('Vegan' | 'Vegetarian' | 'Gluten-Free' | 'Halal')[];
   options?: MenuItemOption[];
+  nutrition?: NutritionInfo;
 }
 
 export interface Restaurant {
@@ -36,6 +44,8 @@ export interface Restaurant {
   featured: boolean;
   offersFreeDelivery?: boolean;
   discountOffer?: string; // e.g., "Spend £15, get £3 off"
+  about?: string;
+  openingHours?: string; // e.g. "Mon-Sun 11:00 - 22:00"
   menu: MenuItem[];
 }
 
@@ -103,6 +113,7 @@ export interface Review {
   customerId: string;
   restaurantId: string;
   rating: number; // 1-5
+  courierRating?: number; // 1-5, only present for delivered orders with a courier
   comment?: string;
   createdAt: string;
 }
@@ -111,4 +122,10 @@ export interface AuthSession {
   customerId: string;
   phone: string;
   sessionToken: string;
+}
+
+export interface CustomerProfile {
+  name: string | null;
+  notifyOrderUpdates: boolean;
+  notifyPromotions: boolean;
 }

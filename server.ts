@@ -28,7 +28,7 @@ const memoryDb = {
   closedRestaurants: [] as string[],
   outOfStockItems: [] as string[],
   drivers: [] as { name: string; phone: string; vehicle: string }[],
-  customers: [] as { id: string; phone: string }[],
+  customers: [] as { id: string; phone: string; name?: string | null; notifyOrderUpdates?: boolean; notifyPromotions?: boolean }[],
   sessions: {} as Record<string, string>, // token -> customerId
   addresses: [] as any[],
   reviews: [] as any[],
@@ -370,6 +370,14 @@ async function bootstrapPostgres() {
         discount_percent SMALLINT NOT NULL,
         active BOOLEAN DEFAULT TRUE
       );
+    `);
+
+    // Ensure newer customer profile / review columns exist if these tables predate them
+    await client.query(`
+      ALTER TABLE customers ADD COLUMN IF NOT EXISTS name VARCHAR(100);
+      ALTER TABLE customers ADD COLUMN IF NOT EXISTS notify_order_updates BOOLEAN DEFAULT TRUE;
+      ALTER TABLE customers ADD COLUMN IF NOT EXISTS notify_promotions BOOLEAN DEFAULT TRUE;
+      ALTER TABLE reviews ADD COLUMN IF NOT EXISTS courier_rating SMALLINT;
     `);
 
     const { rows: existingPromos } = await client.query('SELECT COUNT(*) FROM promo_codes;');
@@ -1048,6 +1056,68 @@ async function startServer() {
     return res.json({ customerId, phone: customer?.phone });
   });
 
+  // ===== Customer profile (name + notification preferences) =====
+
+  app.get('/api/profile', async (req, res) => {
+    const customerId = await getSessionCustomerId(req);
+    if (!customerId) return res.status(401).json({ error: 'Please log in.' });
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const result = await pool.query('SELECT name, notify_order_updates, notify_promotions FROM customers WHERE id = $1;', [customerId]);
+        const row = result.rows[0];
+        return res.json({
+          name: row?.name || null,
+          notifyOrderUpdates: row?.notify_order_updates !== false,
+          notifyPromotions: row?.notify_promotions !== false
+        });
+      } catch (err) {
+        console.error('[PostgreSQL] Error fetching profile, using memory fallback:', err);
+      }
+    }
+    const customer = memoryDb.customers.find(c => c.id === customerId);
+    return res.json({
+      name: customer?.name || null,
+      notifyOrderUpdates: customer?.notifyOrderUpdates !== false,
+      notifyPromotions: customer?.notifyPromotions !== false
+    });
+  });
+
+  app.patch('/api/profile', async (req, res) => {
+    const customerId = await getSessionCustomerId(req);
+    if (!customerId) return res.status(401).json({ error: 'Please log in.' });
+    const { name, notifyOrderUpdates, notifyPromotions } = req.body;
+    if (name !== undefined && typeof name !== 'string') {
+      return res.status(400).json({ error: 'name must be a string.' });
+    }
+    const trimmedName = typeof name === 'string' ? name.trim().slice(0, 100) : undefined;
+
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        await pool.query(
+          `UPDATE customers SET
+             name = COALESCE($1, name),
+             notify_order_updates = COALESCE($2, notify_order_updates),
+             notify_promotions = COALESCE($3, notify_promotions)
+           WHERE id = $4;`,
+          [trimmedName !== undefined ? trimmedName : null, notifyOrderUpdates !== undefined ? !!notifyOrderUpdates : null, notifyPromotions !== undefined ? !!notifyPromotions : null, customerId]
+        );
+        const result = await pool.query('SELECT name, notify_order_updates, notify_promotions FROM customers WHERE id = $1;', [customerId]);
+        const row = result.rows[0];
+        return res.json({ success: true, name: row?.name || null, notifyOrderUpdates: row?.notify_order_updates !== false, notifyPromotions: row?.notify_promotions !== false });
+      } catch (err) {
+        console.error('[PostgreSQL] Error updating profile, using memory fallback:', err);
+      }
+    }
+    const customer = memoryDb.customers.find(c => c.id === customerId);
+    if (!customer) return res.status(404).json({ error: 'Customer not found.' });
+    if (trimmedName !== undefined) customer.name = trimmedName;
+    if (notifyOrderUpdates !== undefined) customer.notifyOrderUpdates = !!notifyOrderUpdates;
+    if (notifyPromotions !== undefined) customer.notifyPromotions = !!notifyPromotions;
+    return res.json({ success: true, name: customer.name || null, notifyOrderUpdates: customer.notifyOrderUpdates !== false, notifyPromotions: customer.notifyPromotions !== false });
+  });
+
   // ===== Saved addresses =====
 
   app.get('/api/addresses', async (req, res) => {
@@ -1112,10 +1182,15 @@ async function startServer() {
   app.post('/api/reviews', async (req, res) => {
     const customerId = await getSessionCustomerId(req);
     if (!customerId) return res.status(401).json({ error: 'Please log in.' });
-    const { orderId, rating, comment } = req.body;
+    const { orderId, rating, comment, courierRating } = req.body;
     const numericRating = Number(rating);
     if (!orderId || !Number.isInteger(numericRating) || numericRating < 1 || numericRating > 5) {
       return res.status(400).json({ error: 'A valid orderId and a 1-5 rating are required.' });
+    }
+    const hasCourierRating = courierRating !== undefined && courierRating !== null;
+    const numericCourierRating = hasCourierRating ? Number(courierRating) : null;
+    if (hasCourierRating && (!Number.isInteger(numericCourierRating) || numericCourierRating! < 1 || numericCourierRating! > 5)) {
+      return res.status(400).json({ error: 'Courier rating must be 1-5.' });
     }
 
     const pool = getPgPool();
@@ -1133,7 +1208,7 @@ async function startServer() {
           return res.status(400).json({ error: 'This order has already been rated.' });
         }
         const id = randomUUID().replace(/-/g, '').slice(0, 12);
-        await pool.query('INSERT INTO reviews (id, order_id, customer_id, restaurant_id, rating, comment) VALUES ($1, $2, $3, $4, $5, $6);', [id, orderId, customerId, order.restaurant_id, numericRating, comment || null]);
+        await pool.query('INSERT INTO reviews (id, order_id, customer_id, restaurant_id, rating, courier_rating, comment) VALUES ($1, $2, $3, $4, $5, $6, $7);', [id, orderId, customerId, order.restaurant_id, numericRating, numericCourierRating, comment || null]);
         await pool.query('UPDATE orders SET rated = TRUE WHERE id = $1;', [orderId]);
         return res.json({ success: true });
       } catch (err) {
@@ -1145,9 +1220,35 @@ async function startServer() {
     if (!order || order.customerId !== customerId) return res.status(404).json({ error: 'Order not found.' });
     if (order.status !== 'Delivered') return res.status(400).json({ error: 'Only delivered orders can be rated.' });
     if (order.rated) return res.status(400).json({ error: 'This order has already been rated.' });
-    memoryDb.reviews.push({ id: randomUUID(), orderId, customerId, restaurantId: order.restaurantId, rating: numericRating, comment, createdAt: new Date().toISOString() });
+    memoryDb.reviews.push({ id: randomUUID(), orderId, customerId, restaurantId: order.restaurantId, rating: numericRating, courierRating: numericCourierRating, comment, createdAt: new Date().toISOString() });
     order.rated = true;
     return res.json({ success: true });
+  });
+
+  // Individual reviews for a restaurant's page (not just the aggregate count/rating).
+  app.get('/api/restaurants/:id/reviews', async (req, res) => {
+    const { id } = req.params;
+    const limit = 20;
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const result = await pool.query(
+          'SELECT id, rating, courier_rating, comment, created_at FROM reviews WHERE restaurant_id = $1 ORDER BY created_at DESC LIMIT $2;',
+          [id, limit]
+        );
+        return res.json({
+          reviews: result.rows.map(r => ({ id: r.id, rating: Number(r.rating), courierRating: r.courier_rating != null ? Number(r.courier_rating) : undefined, comment: r.comment || undefined, createdAt: r.created_at })),
+          source: 'postgres'
+        });
+      } catch (err) {
+        console.error('[PostgreSQL] Error fetching restaurant reviews, using memory fallback:', err);
+      }
+    }
+    const reviews = memoryDb.reviews
+      .filter(r => r.restaurantId === id)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, limit);
+    return res.json({ reviews, source: 'memory' });
   });
 
   // ===== Promo codes =====
