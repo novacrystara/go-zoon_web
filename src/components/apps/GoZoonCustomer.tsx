@@ -1594,14 +1594,19 @@ export default function GoZoonCustomer({
 
       {/* Floating Basket Drawer - hidden whenever the live order tracker is showing
           (any order not yet Delivered/Cancelled takes over the main screen; the
-          basket button must never float on top of it). */}
+          basket button must never float on top of it).
+          Uses `fixed` rather than `absolute`: the root screen container below is
+          both the `relative` positioning context AND the scrolling element, so an
+          `absolute` child anchors to the bottom of the *scrolled content* and
+          drifts up over menu items as the list scrolls. `fixed` anchors to the
+          actual viewport instead, keeping it pinned to the real screen bottom. */}
       {cart.length > 0 && selectedRestaurant && (!activeOrder || activeOrder.status === 'Delivered' || activeOrder.status === 'Cancelled') && (
         <button
           onClick={() => {
             setCheckoutStep('cart');
             setIsCartOpen(true);
           }}
-          className="absolute bottom-3 left-3 right-3 h-10 bg-brand-blue hover:bg-brand-blue/95 text-white rounded-full font-bold text-xs flex items-center justify-between px-4 shadow-md z-30 cursor-pointer animate-pulse"
+          className="fixed bottom-3 left-3 right-3 h-10 bg-brand-blue hover:bg-brand-blue/95 text-white rounded-full font-bold text-xs flex items-center justify-between px-4 shadow-md z-30 cursor-pointer animate-pulse"
         >
           <div className="flex items-center gap-1.5">
             <ShoppingBag className="w-4 h-4" />
