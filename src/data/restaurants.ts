@@ -65,7 +65,7 @@ export const UK_RESTAURANTS: Restaurant[] = [
         name: 'Battered Jumbo Sausage',
         description: 'Pork sausage dipped in chipshop batter and fried till crispy.',
         price: 3.50,
-        image: 'https://images.unsplash.com/photo-1778449521139-8c4a3f6273c5?auto=format&fit=crop&w=300&q=80',
+        image: 'https://images.unsplash.com/photo-1531860835813-c0e85098954c?auto=format&fit=crop&w=300&q=80',
         category: 'Mains',
         nutrition: { calories: 340, protein: 14, carbs: 18, fat: 24 }
       },
@@ -116,7 +116,7 @@ export const UK_RESTAURANTS: Restaurant[] = [
         name: 'Half Roast Norfolk Chicken',
         description: 'Lemon & herb basted roasted chicken, served with roast potatoes, Yorkshire pudding, seasonal vegetables, and sage & onion stuffing.',
         price: 15.50,
-        image: 'https://images.unsplash.com/photo-1670398564097-0762e1b30b3a?auto=format&fit=crop&w=300&q=80',
+        image: 'https://images.unsplash.com/photo-1598103442097-8b74394b95c6?auto=format&fit=crop&w=300&q=80',
         category: 'Sunday Roast Specials',
         nutrition: { calories: 870, protein: 62, carbs: 55, fat: 38 }
       },
@@ -405,7 +405,7 @@ export const UK_RESTAURANTS: Restaurant[] = [
         name: 'Authentic Hummus & Pita',
         description: 'Creamy pureed chickpeas with sesame tahini, fresh lemon juice, garlic, and olive oil, served with warm clay-baked flatbread.',
         price: 4.95,
-        image: 'https://images.unsplash.com/photo-1591299177061-2151e53fcaea?auto=format&fit=crop&w=300&q=80',
+        image: 'https://images.unsplash.com/photo-1637949385162-e416fb15b2ce?auto=format&fit=crop&w=300&q=80',
         category: 'Appetizers',
         dietary: ['Vegetarian', 'Vegan'],
         nutrition: { calories: 390, protein: 12, carbs: 48, fat: 17 }
