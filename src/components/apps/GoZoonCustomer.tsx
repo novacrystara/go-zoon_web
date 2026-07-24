@@ -100,6 +100,7 @@ export default function GoZoonCustomer({
   onOrderModeChange,
 }: GoZoonCustomerProps): React.JSX.Element {
   const [selectedRestaurant, setSelectedRestaurant] = useState<Restaurant | null>(null);
+  const [pendingRestaurantSwitch, setPendingRestaurantSwitch] = useState<Restaurant | null>(null);
   const [selectedCategoryHero, setSelectedCategoryHero] = useState<string | null>(null);
   const [customizingItem, setCustomizingItem] = useState<MenuItem | null>(null);
   const [customizationNotes, setCustomizationNotes] = useState('');
@@ -370,6 +371,19 @@ export default function GoZoonCustomer({
     fetchApi('/api/notifications/read-all', { method: 'POST' }).catch(() => {});
   };
 
+  // Tapping a notification should take you to the thing it's about, not just mark it read.
+  const handleNotificationClick = (n: AppNotification) => {
+    handleMarkNotificationRead(n.id);
+    setIsNotificationsOpen(false);
+    if (!n.orderId) return;
+    const relatedOrder = orders.find(o => o.id === n.orderId);
+    if (relatedOrder && relatedOrder.status !== 'Delivered' && relatedOrder.status !== 'Cancelled') {
+      onSetActiveOrder(relatedOrder.id);
+    } else {
+      setIsOrdersOpen(true);
+    }
+  };
+
   const activeOrder = orders.find(o => o.id === activeOrderId);
 
   // Load saved addresses once logged in.
@@ -424,10 +438,11 @@ export default function GoZoonCustomer({
     // which clears selectedRestaurant but leaves the basket populated.
     const cartOwnerId = cart[0]?.restaurantId;
     if (cartOwnerId && cartOwnerId !== restaurant.id) {
-      if (window.confirm(`Your basket has items from another restaurant. Clear your basket to order from ${restaurant.name}?`)) {
-        cart.forEach(item => onRemoveCartItem(item.id));
-        setSelectedRestaurant(restaurant);
-      }
+      // An in-app confirmation instead of window.confirm() - native confirm() dialogs
+      // are unreliable inside Capacitor/WebView builds (can be suppressed or silently
+      // auto-dismiss), which made tapping any restaurant other than the basket's owner
+      // appear to simply do nothing.
+      setPendingRestaurantSwitch(restaurant);
     } else {
       setSelectedRestaurant(restaurant);
     }
@@ -767,11 +782,6 @@ export default function GoZoonCustomer({
       restaurant.postcode.toLowerCase().includes(q) ||
       restaurant.menu.some(item => item.name.toLowerCase().includes(q));
 
-    // "Nearby Restaurants": the default browse list is limited to a real delivery
-    // radius around the selected postcode. An active search overrides this - typing
-    // a location (e.g. "Camden") should surface a match anywhere, not just nearby.
-    const matchesDistance = q !== '' || haversineDistanceKm(currentPostcode, restaurant) <= NEARBY_RADIUS_KM;
-
     let matchesFilter = true;
     if (activeFilter === 'Offers') {
       matchesFilter = !!restaurant.discountOffer || restaurant.deliveryFee === 0;
@@ -803,7 +813,7 @@ export default function GoZoonCustomer({
       }
     }
 
-    return matchesSearch && matchesDistance && matchesFilter && matchesHeroCategory;
+    return matchesSearch && matchesFilter && matchesHeroCategory;
   }), [restaurantsList, searchQuery, activeFilter, selectedCategoryHero, currentPostcode]);
 
   // Average menu item price used as a "Price" sort proxy - restaurants don't carry
@@ -1321,7 +1331,7 @@ export default function GoZoonCustomer({
                               </div>
                               {item.image && (
                                 <div className="w-16 h-16 rounded-lg overflow-hidden border border-slate-100 flex-shrink-0">
-                                  <img src={item.image} alt="" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                                  <img src={item.image} alt="" referrerPolicy="no-referrer" draggable={false} className="w-full h-full object-cover pointer-events-none" />
                                 </div>
                               )}
                             </div>
@@ -1378,22 +1388,22 @@ export default function GoZoonCustomer({
 
           {/* Recently Ordered - restaurants derived from this customer's own order history */}
           {showDiscoverySections && recentlyOrderedRestaurants.length > 0 && (
-            <div className="p-3 bg-white border-b border-slate-100 flex-shrink-0">
-              <div className="flex items-center gap-1.5 mb-2">
-                <History className="w-3.5 h-3.5 text-brand-blue" />
-                <h3 className="font-extrabold text-xs text-slate-800">Recently Ordered</h3>
+            <div className="px-3 py-2 bg-white border-b border-slate-100 flex-shrink-0">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <History className="w-3 h-3 text-brand-blue" />
+                <h3 className="font-extrabold text-[11px] text-slate-800">Recently Ordered</h3>
               </div>
-              <div className="flex gap-2.5 overflow-x-auto no-scrollbar">
+              <div className="flex gap-2 overflow-x-auto no-scrollbar">
                 {recentlyOrderedRestaurants.map(rest => (
                   <button
                     key={rest.id}
                     onClick={() => selectRestaurantSafely(rest)}
-                    className="flex-shrink-0 w-24 text-left cursor-pointer group"
+                    className="flex-shrink-0 w-20 text-left cursor-pointer group"
                   >
-                    <div className="w-24 h-16 rounded-lg overflow-hidden border border-slate-150 bg-slate-100">
-                      {rest.image && <img src={rest.image} alt={rest.name} referrerPolicy="no-referrer" className="w-full h-full object-cover" />}
+                    <div className="w-20 h-14 rounded-lg overflow-hidden border border-slate-150 bg-slate-100">
+                      {rest.image && <img src={rest.image} alt={rest.name} referrerPolicy="no-referrer" draggable={false} className="w-full h-full object-cover pointer-events-none" />}
                     </div>
-                    <span className="block text-[10px] font-bold text-slate-700 truncate mt-1 group-hover:text-brand-blue">{rest.name}</span>
+                    <span className="block text-[9px] font-bold text-slate-700 truncate mt-1 group-hover:text-brand-blue">{rest.name}</span>
                   </button>
                 ))}
               </div>
@@ -1402,26 +1412,26 @@ export default function GoZoonCustomer({
 
           {/* Featured Restaurants */}
           {showDiscoverySections && featuredRestaurants.length > 0 && (
-            <div className="p-3 bg-white border-b border-slate-100 flex-shrink-0">
-              <div className="flex items-center gap-1.5 mb-2">
-                <Award className="w-3.5 h-3.5 text-brand-orange" />
-                <h3 className="font-extrabold text-xs text-slate-800">Featured Restaurants</h3>
+            <div className="px-3 py-2 bg-white border-b border-slate-100 flex-shrink-0">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <Award className="w-3 h-3 text-brand-orange" />
+                <h3 className="font-extrabold text-[11px] text-slate-800">Featured Restaurants</h3>
               </div>
-              <div className="flex gap-2.5 overflow-x-auto no-scrollbar">
+              <div className="flex gap-2 overflow-x-auto no-scrollbar">
                 {featuredRestaurants.map(rest => (
                   <button
                     key={rest.id}
                     onClick={() => selectRestaurantSafely(rest)}
-                    className="flex-shrink-0 w-36 text-left cursor-pointer group bg-slate-50 rounded-xl border border-slate-150 overflow-hidden hover:border-brand-blue/40 transition-all"
+                    className="flex-shrink-0 w-28 text-left cursor-pointer group bg-slate-50 rounded-xl border border-slate-150 overflow-hidden hover:border-brand-blue/40 transition-all"
                   >
-                    <div className="w-36 h-20 bg-slate-150 relative">
-                      {rest.image && <img src={rest.image} alt={rest.name} referrerPolicy="no-referrer" className="w-full h-full object-cover" />}
-                      <span className="absolute top-1.5 left-1.5 bg-brand-orange text-white text-[8px] font-black px-1.5 py-0.3 rounded-full uppercase">Featured</span>
+                    <div className="w-28 h-14 bg-slate-150 relative">
+                      {rest.image && <img src={rest.image} alt={rest.name} referrerPolicy="no-referrer" draggable={false} className="w-full h-full object-cover pointer-events-none" />}
+                      <span className="absolute top-1 left-1 bg-brand-orange text-white text-[7px] font-black px-1.5 py-0.3 rounded-full uppercase">Featured</span>
                     </div>
-                    <div className="p-2 space-y-0.5">
-                      <span className="block text-[10px] font-bold text-slate-800 truncate group-hover:text-brand-blue">{rest.name}</span>
-                      <span className="flex items-center gap-0.5 text-[9px] font-semibold text-amber-500">
-                        <Star className="w-2.5 h-2.5 fill-amber-500" />
+                    <div className="p-1.5 space-y-0.5">
+                      <span className="block text-[9px] font-bold text-slate-800 truncate group-hover:text-brand-blue">{rest.name}</span>
+                      <span className="flex items-center gap-0.5 text-[8px] font-semibold text-amber-500">
+                        <Star className="w-2 h-2 fill-amber-500" />
                         {rest.rating}
                       </span>
                     </div>
@@ -1433,24 +1443,24 @@ export default function GoZoonCustomer({
 
           {/* Popular Near You - most-reviewed restaurants within actual delivery distance */}
           {showDiscoverySections && popularNearYou.length > 0 && (
-            <div className="p-3 bg-white border-b border-slate-100 flex-shrink-0">
-              <div className="flex items-center gap-1.5 mb-2">
-                <TrendingUp className="w-3.5 h-3.5 text-brand-blue" />
-                <h3 className="font-extrabold text-xs text-slate-800">Popular Near You</h3>
+            <div className="px-3 py-2 bg-white border-b border-slate-100 flex-shrink-0">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <TrendingUp className="w-3 h-3 text-brand-blue" />
+                <h3 className="font-extrabold text-[11px] text-slate-800">Popular Near You</h3>
               </div>
-              <div className="flex gap-2.5 overflow-x-auto no-scrollbar">
+              <div className="flex gap-2 overflow-x-auto no-scrollbar">
                 {popularNearYou.map(rest => (
                   <button
                     key={rest.id}
                     onClick={() => selectRestaurantSafely(rest)}
-                    className="flex-shrink-0 w-32 text-left cursor-pointer group"
+                    className="flex-shrink-0 w-24 text-left cursor-pointer group"
                   >
-                    <div className="w-32 h-20 rounded-lg overflow-hidden border border-slate-150 bg-slate-100">
-                      {rest.image && <img src={rest.image} alt={rest.name} referrerPolicy="no-referrer" className="w-full h-full object-cover" />}
+                    <div className="w-24 h-14 rounded-lg overflow-hidden border border-slate-150 bg-slate-100">
+                      {rest.image && <img src={rest.image} alt={rest.name} referrerPolicy="no-referrer" draggable={false} className="w-full h-full object-cover pointer-events-none" />}
                     </div>
-                    <span className="block text-[10px] font-bold text-slate-700 truncate mt-1 group-hover:text-brand-blue">{rest.name}</span>
-                    <span className="flex items-center gap-0.5 text-[9px] font-semibold text-slate-400">
-                      <MessageSquare className="w-2.5 h-2.5" />
+                    <span className="block text-[9px] font-bold text-slate-700 truncate mt-1 group-hover:text-brand-blue">{rest.name}</span>
+                    <span className="flex items-center gap-0.5 text-[8px] font-semibold text-slate-400">
+                      <MessageSquare className="w-2 h-2" />
                       {rest.reviewsCount} reviews
                     </span>
                   </button>
@@ -1544,7 +1554,7 @@ export default function GoZoonCustomer({
                   >
                     <div className="h-20 bg-slate-150 relative">
                       {rest.image && (
-                        <img src={rest.image} alt={rest.name} referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                        <img src={rest.image} alt={rest.name} referrerPolicy="no-referrer" draggable={false} className="w-full h-full object-cover pointer-events-none" />
                       )}
                       {isClosed && (
                         <div className="absolute inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center">
@@ -1582,8 +1592,10 @@ export default function GoZoonCustomer({
         </div>
       )}
 
-      {/* Floating Basket Drawer */}
-      {cart.length > 0 && selectedRestaurant && activeOrder?.status !== 'OutForDelivery' && activeOrder?.status !== 'Preparing' && (
+      {/* Floating Basket Drawer - hidden whenever the live order tracker is showing
+          (any order not yet Delivered/Cancelled takes over the main screen; the
+          basket button must never float on top of it). */}
+      {cart.length > 0 && selectedRestaurant && (!activeOrder || activeOrder.status === 'Delivered' || activeOrder.status === 'Cancelled') && (
         <button
           onClick={() => {
             setCheckoutStep('cart');
@@ -1598,6 +1610,40 @@ export default function GoZoonCustomer({
           <span>View Basket</span>
           <span className="font-extrabold">£{grandTotal.toFixed(2)}</span>
         </button>
+      )}
+
+      {/* Confirm switching restaurants (basket has items from a different one) */}
+      {pendingRestaurantSwitch && (
+        <div className="absolute inset-0 bg-black/60 backdrop-blur-xs flex items-end z-50">
+          <div className="w-full bg-white rounded-t-2xl p-4 space-y-4 animate-in slide-in-from-bottom duration-200 text-xs">
+            <div>
+              <h4 className="font-black text-sm text-slate-900">Clear your basket?</h4>
+              <p className="text-[11px] text-slate-500 mt-1">
+                Your basket has items from another restaurant. Clear it to order from <b className="text-slate-800">{pendingRestaurantSwitch.name}</b>?
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setPendingRestaurantSwitch(null)}
+                className="flex-1 h-10 border border-slate-200 text-slate-600 rounded-lg font-bold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  cart.forEach(item => onRemoveCartItem(item.id));
+                  setSelectedRestaurant(pendingRestaurantSwitch);
+                  setPendingRestaurantSwitch(null);
+                }}
+                className="flex-1 h-10 bg-brand-orange text-white font-black rounded-lg shadow-md cursor-pointer"
+              >
+                Clear &amp; Continue
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Customizer Dialog Modal */}
@@ -2601,7 +2647,7 @@ export default function GoZoonCustomer({
                 notifications.map(n => (
                   <button
                     key={n.id}
-                    onClick={() => handleMarkNotificationRead(n.id)}
+                    onClick={() => handleNotificationClick(n)}
                     className={`w-full text-left p-3 rounded-xl border space-y-1 cursor-pointer ${n.read ? 'bg-white border-slate-100' : 'bg-brand-blue/5 border-brand-blue/20'}`}
                   >
                     <div className="flex items-center justify-between gap-2">
