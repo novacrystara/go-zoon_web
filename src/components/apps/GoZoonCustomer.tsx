@@ -1235,7 +1235,7 @@ export default function GoZoonCustomer({
           </div>
 
           {/* Menu Items List */}
-          <div className="flex-1 overflow-y-auto p-3 space-y-4">
+          <div className={`flex-1 overflow-y-auto p-3 space-y-4 ${cart.length > 0 ? 'pb-20' : ''}`}>
             {closedRestaurants.includes(selectedRestaurant.id) ? (
               <div className="p-6 text-center text-red-500 bg-red-50/50 border border-red-100 rounded-xl space-y-2">
                 <ShieldAlert className="w-10 h-10 mx-auto opacity-75" />
