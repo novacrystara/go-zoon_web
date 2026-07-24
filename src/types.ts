@@ -46,6 +46,8 @@ export interface Restaurant {
   discountOffer?: string; // e.g., "Spend £15, get £3 off"
   about?: string;
   openingHours?: string; // e.g. "Mon-Sun 11:00 - 22:00"
+  lat: number;
+  lng: number;
   menu: MenuItem[];
 }
 
@@ -64,7 +66,15 @@ export interface CartItem {
   notes?: string;
 }
 
-export type OrderStatus = 'Placed' | 'Preparing' | 'OutForDelivery' | 'Delivered' | 'Cancelled';
+export type OrderStatus =
+  | 'Placed'
+  | 'Preparing'
+  | 'ReadyForPickup'
+  | 'DriverArrived'
+  | 'PickedUp'
+  | 'OutForDelivery'
+  | 'Delivered'
+  | 'Cancelled';
 
 export interface Order {
   id: string;
@@ -83,6 +93,7 @@ export interface Order {
   total: number;
   status: OrderStatus;
   orderMode: 'Delivery' | 'Collection';
+  paymentMethod: 'Card' | 'Cash';
   deliveryAddress: string;
   deliveryPostcode: string;
   driverName?: string;
@@ -96,6 +107,8 @@ export interface UKPostcodeZone {
   postcode: string;
   areaName: string;
   deliveryMultiplier: number; // to adjust delivery fees/times dynamically
+  lat: number;
+  lng: number;
 }
 
 export interface SavedAddress {
@@ -128,4 +141,15 @@ export interface CustomerProfile {
   name: string | null;
   notifyOrderUpdates: boolean;
   notifyPromotions: boolean;
+  hasMpin: boolean;
+}
+
+export interface AppNotification {
+  id: string;
+  type: 'order' | 'promo';
+  title: string;
+  body: string;
+  orderId?: string;
+  read: boolean;
+  createdAt: string;
 }

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Store, Check, Play, AlertCircle, ShoppingBag, Plus, Utensils, Award, TrendingUp, DollarSign, X, HelpCircle, EyeOff } from 'lucide-react';
 import { Order, OrderStatus, Restaurant, MenuItem } from '../../types';
+import { validateUKPostcode } from '../../data/restaurants';
 
 interface GoZoonBusinessProps {
   orders: Order[];
@@ -170,13 +171,16 @@ export default function GoZoonBusiness({
   const merchantOrders = orders.filter(o => o.restaurantId === activeMerchant?.id);
   const incomingOrders = merchantOrders.filter(o => o.status === 'Placed');
   const activePreps = merchantOrders.filter(o => o.status === 'Preparing');
-  const historyOrders = merchantOrders.filter(o => o.status === 'Delivered' || o.status === 'Cancelled' || o.status === 'OutForDelivery');
+  const historyOrders = merchantOrders.filter(o =>
+    ['ReadyForPickup', 'DriverArrived', 'PickedUp', 'OutForDelivery', 'Delivered', 'Cancelled'].includes(o.status)
+  );
 
   const handleOnboardSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!restName.trim()) return;
 
     const newId = `rest-${Date.now()}`;
+    const zone = validateUKPostcode(restPostcode);
     const newRest: Restaurant = {
       id: newId,
       name: restName,
@@ -190,6 +194,8 @@ export default function GoZoonBusiness({
       bannerImage: 'https://images.unsplash.com/photo-1555396273-367ea4eb4db5?auto=format&fit=crop&w=1200&q=80',
       address: restAddress,
       postcode: restPostcode.toUpperCase(),
+      lat: zone?.lat ?? 51.5074,
+      lng: zone?.lng ?? -0.1278,
       featured: false,
       menu: [
         {
@@ -370,13 +376,13 @@ export default function GoZoonBusiness({
 
                     <button
                       onClick={() => {
-                        onUpdateOrderStatus(order.id, 'OutForDelivery');
-                        onAddLog(`ORDER_DISPATCHED: Order #${order.id} dispatched from ${activeMerchant.name} to Courier ${order.driverName}`, 'success');
+                        onUpdateOrderStatus(order.id, 'ReadyForPickup');
+                        onAddLog(`ORDER_READY: Order #${order.id} ready for pickup at ${activeMerchant.name}${order.driverName ? ` (courier ${order.driverName} assigned)` : ' (awaiting courier)'}`, 'success');
                       }}
                       className="w-full h-8.5 bg-brand-blue hover:bg-brand-blue/95 text-white font-extrabold text-xs rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer"
                     >
                       <Check className="w-3.5 h-3.5 stroke-[3]" />
-                      <span>Ready! Dispatch to Road King Rider</span>
+                      <span>Food Ready - Notify Road King Rider</span>
                     </button>
                   </div>
                 ))
@@ -397,10 +403,14 @@ export default function GoZoonBusiness({
                         <span className="text-slate-500 text-[10px]"> • {order.deliveryPostcode}</span>
                       </div>
                       <span className={`text-[9px] font-extrabold px-2 py-0.5 rounded-full ${
-                        order.status === 'OutForDelivery' ? 'bg-brand-orange/10 text-brand-orange border border-brand-orange/20 animate-pulse' :
-                        order.status === 'Cancelled' ? 'bg-red-950 text-red-400' : 'bg-emerald-950 text-emerald-400'
+                        order.status === 'Delivered' ? 'bg-emerald-950 text-emerald-400' :
+                        order.status === 'Cancelled' ? 'bg-red-950 text-red-400' :
+                        'bg-brand-orange/10 text-brand-orange border border-brand-orange/20 animate-pulse'
                       }`}>
-                        {order.status === 'OutForDelivery' ? 'In Transit' : order.status}
+                        {order.status === 'OutForDelivery' ? 'In Transit' :
+                         order.status === 'ReadyForPickup' ? 'Ready for Pickup' :
+                         order.status === 'DriverArrived' ? 'Courier at Kitchen' :
+                         order.status === 'PickedUp' ? 'Picked Up' : order.status}
                       </span>
                     </div>
                   ))}

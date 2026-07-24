@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Store, Bike, Check, AlertCircle, RefreshCw, Smartphone, Play, CheckCircle, Plus, Users, Landmark, Utensils, HelpCircle } from 'lucide-react';
 import { Order, OrderStatus, Restaurant, MenuItem } from '../types';
+import { validateUKPostcode } from '../data/restaurants';
 
 interface PartnerPortalProps {
   orders: Order[];
@@ -75,6 +76,7 @@ export default function PartnerPortal({
     if (!restName.trim()) return;
 
     const newId = `rest-custom-${Date.now()}`;
+    const zone = validateUKPostcode(restPostcode);
     const newRestaurant: Restaurant = {
       id: newId,
       name: restName,
@@ -88,6 +90,8 @@ export default function PartnerPortal({
       bannerImage: restBanner,
       address: restAddress || 'London Central High St',
       postcode: restPostcode.toUpperCase(),
+      lat: zone?.lat ?? 51.5074,
+      lng: zone?.lng ?? -0.1278,
       featured: true,
       discountOffer: 'Brand New Launch Special',
       menu: [

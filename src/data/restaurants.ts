@@ -14,6 +14,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
     bannerImage: 'https://images.unsplash.com/photo-1565557623262-b51c2513a641?auto=format&fit=crop&w=1200&q=80',
     address: '42 Duke Street, Westminster, London',
     postcode: 'SW1A 1AA',
+    lat: 51.5010,
+    lng: -0.1416,
     featured: true,
     offersFreeDelivery: false,
     discountOffer: 'Save 10% on orders over £20',
@@ -92,6 +94,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
     bannerImage: 'https://images.unsplash.com/photo-1544025162-d76694265947?auto=format&fit=crop&w=1200&q=80',
     address: '15 High Street, Camden, London',
     postcode: 'NW1 0NE',
+    lat: 51.5390,
+    lng: -0.1426,
     featured: true,
     offersFreeDelivery: true,
     discountOffer: 'Free Delivery on orders over £15',
@@ -161,6 +165,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
     bannerImage: 'https://images.unsplash.com/photo-1565557623262-b51c2513a641?auto=format&fit=crop&w=1200&q=80',
     address: '88 Brick Lane, Shoreditch, London',
     postcode: 'E1 6QL',
+    lat: 51.5203,
+    lng: -0.0714,
     featured: true,
     offersFreeDelivery: false,
     discountOffer: 'Spend £25, get a free Garlic Naan',
@@ -232,6 +238,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
     bannerImage: 'https://images.unsplash.com/photo-1509440159596-0249088772ff?auto=format&fit=crop&w=1200&q=80',
     address: '102 Kensington High Street, London',
     postcode: 'W8 4SG',
+    lat: 51.5009,
+    lng: -0.1925,
     featured: false,
     offersFreeDelivery: false,
     discountOffer: 'Sweet Treat: Buy 2 Scones, Get 1 Free',
@@ -302,6 +310,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
     bannerImage: 'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?auto=format&fit=crop&w=1200&q=80',
     address: 'Southwark Street, Borough Market, London',
     postcode: 'SE1 1TL',
+    lat: 51.5055,
+    lng: -0.0910,
     featured: false,
     offersFreeDelivery: true,
     discountOffer: 'Spend £18, get free Rosemary Fries',
@@ -362,6 +372,8 @@ export const UK_RESTAURANTS: Restaurant[] = [
     bannerImage: 'https://images.unsplash.com/photo-1529193591184-b1d58069ecdd?auto=format&fit=crop&w=1200&q=80',
     address: '254 Green Lanes, Harringay, London',
     postcode: 'N4 1HE',
+    lat: 51.5773,
+    lng: -0.1066,
     featured: false,
     offersFreeDelivery: false,
     discountOffer: '£3 off when you spend £20',
@@ -413,14 +425,18 @@ export const UK_RESTAURANTS: Restaurant[] = [
 ];
 
 export const UK_POSTCODES: UKPostcodeZone[] = [
-  { postcode: 'SW1A 1AA', areaName: 'Westminster, London', deliveryMultiplier: 1.2 },
-  { postcode: 'EC1A 1BB', areaName: 'City of London', deliveryMultiplier: 1.3 },
-  { postcode: 'NW1 0NE', areaName: 'Camden, London', deliveryMultiplier: 1.1 },
-  { postcode: 'E1 6QL', areaName: 'Shoreditch & Whitechapel, London', deliveryMultiplier: 1.0 },
-  { postcode: 'W8 4SG', areaName: 'Kensington, London', deliveryMultiplier: 1.4 },
-  { postcode: 'SE1 1TL', areaName: 'Southwark, London', deliveryMultiplier: 1.15 },
-  { postcode: 'N4 1HE', areaName: 'Harringay, London', deliveryMultiplier: 1.0 },
+  { postcode: 'SW1A 1AA', areaName: 'Westminster, London', deliveryMultiplier: 1.2, lat: 51.5010, lng: -0.1416 },
+  { postcode: 'EC1A 1BB', areaName: 'City of London', deliveryMultiplier: 1.3, lat: 51.5178, lng: -0.0965 },
+  { postcode: 'NW1 0NE', areaName: 'Camden, London', deliveryMultiplier: 1.1, lat: 51.5390, lng: -0.1426 },
+  { postcode: 'E1 6QL', areaName: 'Shoreditch & Whitechapel, London', deliveryMultiplier: 1.0, lat: 51.5203, lng: -0.0714 },
+  { postcode: 'W8 4SG', areaName: 'Kensington, London', deliveryMultiplier: 1.4, lat: 51.5009, lng: -0.1925 },
+  { postcode: 'SE1 1TL', areaName: 'Southwark, London', deliveryMultiplier: 1.15, lat: 51.5045, lng: -0.0865 },
+  { postcode: 'N4 1HE', areaName: 'Harringay, London', deliveryMultiplier: 1.0, lat: 51.5773, lng: -0.1066 },
 ];
+
+// Central London fallback used for postcodes that pass basic UK-postcode validation
+// but aren't one of our known zones (see the regex branch below).
+const LONDON_CENTER = { lat: 51.5074, lng: -0.1278 };
 
 export function validateUKPostcode(postcode: string): UKPostcodeZone | null {
   const normalized = postcode.trim().toUpperCase().replace(/\s+/g, ' ');
@@ -433,7 +449,9 @@ export function validateUKPostcode(postcode: string): UKPostcodeZone | null {
     return {
       postcode: normalized,
       areaName: prefixMatch.areaName,
-      deliveryMultiplier: prefixMatch.deliveryMultiplier
+      deliveryMultiplier: prefixMatch.deliveryMultiplier,
+      lat: prefixMatch.lat,
+      lng: prefixMatch.lng
     };
   }
 
@@ -443,9 +461,27 @@ export function validateUKPostcode(postcode: string): UKPostcodeZone | null {
     return {
       postcode: normalized,
       areaName: 'Greater London (Simulated Zone)',
-      deliveryMultiplier: 1.1
+      deliveryMultiplier: 1.1,
+      lat: LONDON_CENTER.lat,
+      lng: LONDON_CENTER.lng
     };
   }
 
   return null;
 }
+
+// Straight-line (great-circle) distance in km - good enough for a "how far is this
+// restaurant from you" estimate without needing a paid routing/maps API.
+export function haversineDistanceKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+  const R = 6371;
+  const dLat = (b.lat - a.lat) * Math.PI / 180;
+  const dLng = (b.lng - a.lng) * Math.PI / 180;
+  const lat1 = a.lat * Math.PI / 180;
+  const lat2 = b.lat * Math.PI / 180;
+  const sinDLat = Math.sin(dLat / 2);
+  const sinDLng = Math.sin(dLng / 2);
+  const h = sinDLat * sinDLat + Math.cos(lat1) * Math.cos(lat2) * sinDLng * sinDLng;
+  return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
+
+export const NEARBY_RADIUS_KM = 8;

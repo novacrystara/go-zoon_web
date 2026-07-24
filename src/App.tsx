@@ -4,7 +4,7 @@ import GoZoonBusiness from './components/apps/GoZoonBusiness';
 import GoZoonRoadKing from './components/apps/GoZoonRoadKing';
 import GoZoonAdmin from './components/apps/GoZoonAdmin';
 
-import { UK_RESTAURANTS, UK_POSTCODES } from './data/restaurants';
+import { UK_RESTAURANTS, UK_POSTCODES, validateUKPostcode } from './data/restaurants';
 import { Restaurant, CartItem, Order, UKPostcodeZone, OrderStatus, MenuItem } from './types';
 import { Smartphone, Store, Bike, Landmark, Info, Sparkles, Server, ShieldCheck, CreditCard, Activity, Wifi, Battery, Settings } from 'lucide-react';
 import { getApiUrl, fetchApi, getStoredSession, setStoredSession, clearStoredSession, StoredSession } from './api';
@@ -43,7 +43,15 @@ export default function App(): React.JSX.Element {
 
   const [currentPostcode, setCurrentPostcode] = useState<UKPostcodeZone>(() => {
     const saved = localStorage.getItem('gozoon_postcode');
-    return saved ? JSON.parse(saved) : UK_POSTCODES[0];
+    if (!saved) return UK_POSTCODES[0];
+    const parsed = JSON.parse(saved);
+    // Zones saved before lat/lng was added to UKPostcodeZone are missing coordinates -
+    // re-resolve from the postcode string rather than silently breaking distance-based
+    // features (Nearby Restaurants, Popular Near You) for anyone with an old cached zone.
+    if (typeof parsed?.lat !== 'number' || typeof parsed?.lng !== 'number') {
+      return validateUKPostcode(parsed?.postcode || '') || UK_POSTCODES[0];
+    }
+    return parsed;
   });
 
   const [cart, setCart] = useState<CartItem[]>(() => {
@@ -427,11 +435,12 @@ export default function App(): React.JSX.Element {
     cardName: string;
     restaurantId: string;
     orderMode: 'Delivery' | 'Collection';
+    paymentMethod: 'Card' | 'Cash';
     tip: number;
     promoCode?: string;
     promoDiscountPercent?: number;
   }): Promise<{ success: boolean; error?: string }> => {
-    const { address, postcode, cardName, restaurantId, orderMode, tip, promoCode, promoDiscountPercent = 0 } = params;
+    const { address, postcode, cardName, restaurantId, orderMode, paymentMethod, tip, promoCode, promoDiscountPercent = 0 } = params;
     const selectedRestaurant = restaurantsList.find(r => r.id === restaurantId);
     if (!selectedRestaurant) {
       return { success: false, error: 'Could not identify the restaurant for this basket. Please reopen the restaurant and try again.' };
@@ -453,15 +462,13 @@ export default function App(): React.JSX.Element {
     const safeTip = tip > 0 ? Math.round(tip * 100) / 100 : 0;
     const total = Math.round((subtotal - discount + delFee + sFee + safeTip) * 100) / 100;
 
-    // Pick rider from current online riders pool
-    const assignedRider = drivers[Math.floor(Math.random() * drivers.length)] || drivers[0];
-
     const orderPayload = {
       restaurantId: selectedRestaurant.id,
       restaurantName: selectedRestaurant.name,
       restaurantAddress: selectedRestaurant.address,
       items: cart,
       orderMode,
+      paymentMethod,
       tip: safeTip,
       promoCode,
       // NOT LEGALLY REVIEWED: flat 20% VAT on subtotal is a placeholder. UK hot-food
@@ -471,8 +478,9 @@ export default function App(): React.JSX.Element {
       status: 'Placed',
       deliveryAddress: isCollection ? selectedRestaurant.address : address,
       deliveryPostcode: postcode,
-      driverName: isCollection ? undefined : assignedRider?.name,
-      driverPhone: isCollection ? undefined : assignedRider?.phone,
+      // Driver is deliberately NOT assigned here - assignment now happens as its own
+      // later event when a Road King courier accepts the open gig (see
+      // handleAssignDriver), instead of being randomly preset at order placement.
     };
 
     try {
@@ -495,7 +503,11 @@ export default function App(): React.JSX.Element {
       setActiveOrderId(data.order.id);
       setCart([]);
 
-      addPlatformLog(`STRIPE_PAYMENT_SUCCESS: £${total.toFixed(2)} captured on Card *4242 (Cardholder: ${cardName})`, 'success');
+      if (paymentMethod === 'Card') {
+        addPlatformLog(`STRIPE_PAYMENT_SUCCESS: £${total.toFixed(2)} captured on Card *4242 (Cardholder: ${cardName})`, 'success');
+      } else {
+        addPlatformLog(`CASH_ORDER_CONFIRMED: £${total.toFixed(2)} to be collected as cash on ${isCollection ? 'collection' : 'delivery'}`, 'success');
+      }
       addPlatformLog(`ORDER_PLACED: Order #${data.order.id} submitted to "${selectedRestaurant.name}"`, 'success');
       return { success: true };
     } catch (err) {
@@ -539,6 +551,27 @@ export default function App(): React.JSX.Element {
       });
   };
 
+  // Assigns a courier to an order as its own distinct action (e.g. a Road King rider
+  // accepting an open gig) - deliberately does NOT touch order status, unlike
+  // handleUpdateOrderStatus, so it can happen independently of kitchen progress.
+  const handleAssignDriver = (orderId: string, driverName: string, driverPhone: string) => {
+    setOrders(prev => prev.map(o => o.id === orderId ? { ...o, driverName, driverPhone } : o));
+    addPlatformLog(`DRIVER_ASSIGNED: Courier ${driverName} accepted the gig for order #${orderId}`, 'info');
+
+    fetchApi(`/api/orders/${orderId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ driverName, driverPhone })
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.order) {
+          setOrders(prev => prev.map(o => o.id === orderId ? data.order : o));
+        }
+      })
+      .catch(err => console.error('[PostgreSQL] Failed to assign driver:', err));
+  };
+
   const handleClearLogs = () => {
     setPlatformLogs([]);
     localStorage.removeItem('gozoon_platform_logs');
@@ -567,7 +600,10 @@ export default function App(): React.JSX.Element {
 
   // Glow Badges Calculations for Platform Workspace Switcher
   const unacceptedCount = orders.filter(o => o.status === 'Placed').length;
-  const dispatchGigsCount = orders.filter(o => !o.driverName || o.status === 'Preparing' || o.status === 'OutForDelivery').length;
+  const dispatchGigsCount = orders.filter(o =>
+    o.status !== 'Delivered' && o.status !== 'Cancelled' &&
+    (!o.driverName || ['Preparing', 'ReadyForPickup', 'DriverArrived', 'PickedUp', 'OutForDelivery'].includes(o.status))
+  ).length;
   const trackingActive = orders.some(o => o.id === activeOrderId && o.status !== 'Delivered' && o.status !== 'Cancelled');
 
   if (standaloneApp) {
@@ -622,6 +658,7 @@ export default function App(): React.JSX.Element {
             onUpdateOrderStatus={handleUpdateOrderStatus}
             drivers={drivers}
             onOnboardDriver={handleOnboardDriver}
+            onAssignDriver={handleAssignDriver}
             onAddLog={addPlatformLog}
           />
         )}
@@ -1064,6 +1101,7 @@ export default function App(): React.JSX.Element {
                       onUpdateOrderStatus={handleUpdateOrderStatus}
                       drivers={drivers}
                       onOnboardDriver={handleOnboardDriver}
+                      onAssignDriver={handleAssignDriver}
                       onAddLog={addPlatformLog}
                     />
                   )}

@@ -7,14 +7,19 @@ interface GoZoonRoadKingProps {
   onUpdateOrderStatus: (orderId: string, status: OrderStatus, driverName?: string, driverPhone?: string) => void;
   drivers: { name: string; phone: string; vehicle: string }[];
   onOnboardDriver: (driver: { name: string; phone: string; vehicle: string }) => void;
+  onAssignDriver: (orderId: string, driverName: string, driverPhone: string) => void;
   onAddLog: (event: string, type: 'info' | 'success' | 'warning') => void;
 }
+
+const ACTIVE_JOB_STATUSES: OrderStatus[] = ['Placed', 'Preparing', 'ReadyForPickup', 'DriverArrived', 'PickedUp', 'OutForDelivery'];
+const OPEN_GIG_STATUSES: OrderStatus[] = ['Placed', 'Preparing', 'ReadyForPickup'];
 
 export default function GoZoonRoadKing({
   orders,
   onUpdateOrderStatus,
   drivers,
   onOnboardDriver,
+  onAssignDriver,
   onAddLog
 }: GoZoonRoadKingProps): React.JSX.Element {
   const [selectedDriverName, setSelectedDriverName] = useState<string>(drivers[0]?.name || 'Dave Henderson');
@@ -37,17 +42,17 @@ export default function GoZoonRoadKing({
 
   const selectedDriver = drivers.find(d => d.name === selectedDriverName) || drivers[0];
 
-  // Retrieve active job for this rider
-  // An active job is one that is preparing or outfordelivery and assigned to this driver
-  const activeJob = orders.find(o => 
-    o.driverName === selectedDriver?.name && 
-    (o.status === 'Preparing' || o.status === 'OutForDelivery' || o.status === 'Placed')
+  // Retrieve active job for this rider - any order assigned to them that hasn't
+  // reached a terminal state yet, from acceptance all the way through delivery.
+  const activeJob = orders.find(o =>
+    o.driverName === selectedDriver?.name &&
+    ACTIVE_JOB_STATUSES.includes(o.status)
   );
 
-  // Available jobs (orders that are Placed or Preparing, but have no assigned driver or are open)
-  const openGigs = orders.filter(o => 
-    (!o.driverName || o.driverName === '') && 
-    (o.status === 'Placed' || o.status === 'Preparing')
+  // Available jobs: no courier assigned yet, anywhere from just-placed through food-ready.
+  const openGigs = orders.filter(o =>
+    (!o.driverName || o.driverName === '') &&
+    OPEN_GIG_STATUSES.includes(o.status)
   );
 
   // Filter completed jobs for this driver
@@ -60,10 +65,10 @@ export default function GoZoonRoadKing({
     setWalletBalance(computedEarnings);
   }, [driverJobHistory.length]);
 
-  // Handle accepting an open gig
+  // Handle accepting an open gig - assigns the courier as a distinct action, without
+  // forcing or skipping the kitchen's own Placed -> Preparing -> ReadyForPickup progress.
   const handleAcceptGig = (orderId: string) => {
-    // Assign driver name and phone to order
-    onUpdateOrderStatus(orderId, 'Preparing', selectedDriver.name, selectedDriver.phone);
+    onAssignDriver(orderId, selectedDriver.name, selectedDriver.phone);
     onAddLog(`DRIVER_ASSIGNED: Courier ${selectedDriver.name} accepted job for order #${orderId}`, 'info');
   };
 
@@ -242,11 +247,57 @@ export default function GoZoonRoadKing({
                   </div>
 
                   {/* ACTIONS */}
+                  {activeJob.status === 'Placed' && (
+                    <div className="p-3 bg-stone-900 border border-stone-800 rounded-lg text-center text-xs text-orange-400 font-bold flex items-center justify-center gap-1.5 animate-pulse">
+                      <Compass className="w-4 h-4 text-orange-500 animate-spin" />
+                      <span>Waiting for the restaurant to accept the ticket...</span>
+                    </div>
+                  )}
+
                   {activeJob.status === 'Preparing' && (
                     <div className="p-3 bg-stone-900 border border-stone-800 rounded-lg text-center text-xs text-orange-400 font-bold flex items-center justify-center gap-1.5 animate-pulse">
                       <Compass className="w-4 h-4 text-orange-500 animate-spin" />
                       <span>Waiting for restaurant kitchen to bake the food...</span>
                     </div>
+                  )}
+
+                  {activeJob.status === 'ReadyForPickup' && (
+                    <button
+                      onClick={() => {
+                        onUpdateOrderStatus(activeJob.id, 'DriverArrived');
+                        onAddLog(`DRIVER_ARRIVED: Courier ${selectedDriver.name} arrived at ${activeJob.restaurantName} for order #${activeJob.id}`, 'info');
+                      }}
+                      className="w-full h-9 bg-orange-500 hover:bg-orange-600 text-white font-extrabold text-xs rounded-lg flex items-center justify-center gap-1.5 cursor-pointer shadow-md"
+                    >
+                      <MapPin className="w-4 h-4" />
+                      <span>I've Arrived at the Restaurant</span>
+                    </button>
+                  )}
+
+                  {activeJob.status === 'DriverArrived' && (
+                    <button
+                      onClick={() => {
+                        onUpdateOrderStatus(activeJob.id, 'PickedUp');
+                        onAddLog(`ORDER_PICKED_UP: Courier ${selectedDriver.name} collected order #${activeJob.id} from ${activeJob.restaurantName}`, 'success');
+                      }}
+                      className="w-full h-9 bg-orange-500 hover:bg-orange-600 text-white font-extrabold text-xs rounded-lg flex items-center justify-center gap-1.5 cursor-pointer shadow-md"
+                    >
+                      <Check className="w-4 h-4 stroke-[3]" />
+                      <span>Confirm Order Picked Up</span>
+                    </button>
+                  )}
+
+                  {activeJob.status === 'PickedUp' && (
+                    <button
+                      onClick={() => {
+                        onUpdateOrderStatus(activeJob.id, 'OutForDelivery');
+                        onAddLog(`ORDER_DISPATCHED: Courier ${selectedDriver.name} started delivery of order #${activeJob.id} to customer`, 'success');
+                      }}
+                      className="w-full h-9 bg-orange-500 hover:bg-orange-600 text-white font-extrabold text-xs rounded-lg flex items-center justify-center gap-1.5 cursor-pointer shadow-md"
+                    >
+                      <Bike className="w-4 h-4" />
+                      <span>Start Delivery to Customer</span>
+                    </button>
                   )}
 
                   {activeJob.status === 'OutForDelivery' && (

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Search, MapPin, ShoppingBag, Clock, Tag, Award, Check, ChevronLeft, ChevronDown, Star, Phone, HelpCircle, Navigation, ShieldAlert, CreditCard, ClipboardList, History, User, LogOut, Plus, Bike, Store, Trash2, Leaf, SlidersHorizontal, Info, Bell, MessageSquare, Flame } from 'lucide-react';
-import { Restaurant, CartItem, Order, UKPostcodeZone, MenuItem, OrderStatus, CartCustomization, SavedAddress, Review } from '../../types';
-import { validateUKPostcode } from '../../data/restaurants';
+import { Search, MapPin, ShoppingBag, Clock, Tag, Award, Check, ChevronLeft, ChevronDown, Star, Phone, HelpCircle, Navigation, ShieldAlert, CreditCard, ClipboardList, History, User, LogOut, Plus, Bike, Store, Trash2, Leaf, SlidersHorizontal, Info, Bell, MessageSquare, Flame, TrendingUp, Banknote, Download, FileText, LifeBuoy, KeyRound, X } from 'lucide-react';
+import { Restaurant, CartItem, Order, UKPostcodeZone, MenuItem, OrderStatus, CartCustomization, SavedAddress, Review, AppNotification } from '../../types';
+import { validateUKPostcode, haversineDistanceKm, NEARBY_RADIUS_KM } from '../../data/restaurants';
 import LegalModal from '../LegalModal';
 import PhoneLogin from '../PhoneLogin';
 import { fetchApi, StoredSession } from '../../api';
@@ -40,6 +40,7 @@ interface CheckoutParams {
   cardName: string;
   restaurantId: string;
   orderMode: 'Delivery' | 'Collection';
+  paymentMethod: 'Card' | 'Cash';
   tip: number;
   promoCode?: string;
   promoDiscountPercent?: number;
@@ -105,7 +106,10 @@ export default function GoZoonCustomer({
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isLegalOpen, setIsLegalOpen] = useState(false);
   const [isOrdersOpen, setIsOrdersOpen] = useState(false);
+  const [receiptOrder, setReceiptOrder] = useState<Order | null>(null);
   const [isAccountOpen, setIsAccountOpen] = useState(false);
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [isChangingPostcode, setIsChangingPostcode] = useState(false);
   const [postcodeInput, setPostcodeInput] = useState(currentPostcode.postcode);
   const [postcodeError, setPostcodeError] = useState('');
@@ -125,6 +129,10 @@ export default function GoZoonCustomer({
 
   // Tip
   const [tipAmount, setTipAmount] = useState(0);
+
+  // Payment method: Card (simulated Stripe) or Cash on Delivery/Collection - no
+  // third-party payment gateway is needed for the Cash path.
+  const [paymentMethod, setPaymentMethod] = useState<'Card' | 'Cash'>('Card');
 
   // Post-delivery rating
   const [ratingOrder, setRatingOrder] = useState<Order | null>(null);
@@ -180,8 +188,9 @@ export default function GoZoonCustomer({
   const [notifyPromotions, setNotifyPromotions] = useState(true);
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileSaved, setProfileSaved] = useState(false);
+  const [hasMpin, setHasMpin] = useState(false);
 
-  useEffect(() => {
+  const refreshProfile = () => {
     if (!session) return;
     fetchApi('/api/profile')
       .then(res => res.json())
@@ -190,9 +199,12 @@ export default function GoZoonCustomer({
         setProfileNameInput(data?.name || '');
         setNotifyOrderUpdates(data?.notifyOrderUpdates !== false);
         setNotifyPromotions(data?.notifyPromotions !== false);
+        setHasMpin(!!data?.hasMpin);
       })
       .catch(err => console.error('[Profile] Failed to load:', err));
-  }, [session]);
+  };
+
+  useEffect(refreshProfile, [session]);
 
   const handleSaveProfileName = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -227,8 +239,136 @@ export default function GoZoonCustomer({
     }).catch(err => console.error('[Profile] Failed to save notification setting:', err));
   };
 
+  // MPIN (local quick-login PIN, fully self-contained - no SMS/3rd-party dependency)
+  const [mpinInput, setMpinInput] = useState('');
+  const [mpinConfirmInput, setMpinConfirmInput] = useState('');
+  const [mpinSaving, setMpinSaving] = useState(false);
+  const [mpinSaved, setMpinSaved] = useState(false);
+  const [mpinError, setMpinError] = useState('');
+
+  const handleSetMpin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setMpinError('');
+    setMpinSaved(false);
+    if (!/^\d{4,6}$/.test(mpinInput)) {
+      setMpinError('MPIN must be 4-6 digits.');
+      return;
+    }
+    if (mpinInput !== mpinConfirmInput) {
+      setMpinError('MPINs do not match.');
+      return;
+    }
+    setMpinSaving(true);
+    try {
+      const res = await fetchApi('/api/auth/mpin/set', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mpin: mpinInput })
+      });
+      const data = await res.json();
+      if (data?.success) {
+        setHasMpin(true);
+        setMpinSaved(true);
+        setMpinInput('');
+        setMpinConfirmInput('');
+      } else {
+        setMpinError(data?.error || 'Could not save MPIN.');
+      }
+    } catch {
+      setMpinError('Network error. Please try again.');
+    } finally {
+      setMpinSaving(false);
+    }
+  };
+
+  const handleRemoveMpin = async () => {
+    if (!window.confirm('Remove your MPIN? You will need to log in with OTP next time.')) return;
+    try {
+      await fetchApi('/api/auth/mpin', { method: 'DELETE' });
+      setHasMpin(false);
+    } catch (err) {
+      console.error('[MPIN] Failed to remove:', err);
+    }
+  };
+
+  // Help & Support - self-contained ticket capture (no live chat/email provider needed)
+  const [isSupportOpen, setIsSupportOpen] = useState(false);
+  const [supportMessage, setSupportMessage] = useState('');
+  const [supportSending, setSupportSending] = useState(false);
+  const [supportSent, setSupportSent] = useState(false);
+
+  const handleSendSupportMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!supportMessage.trim()) return;
+    setSupportSending(true);
+    try {
+      const res = await fetchApi('/api/support-messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: supportMessage.trim() })
+      });
+      if (res.ok) {
+        setSupportSent(true);
+        setSupportMessage('');
+      }
+    } catch (err) {
+      console.error('[Support] Failed to send message:', err);
+    } finally {
+      setSupportSending(false);
+    }
+  };
+
+  // Delete Account
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
+
+  const handleDeleteAccount = async () => {
+    if (!window.confirm('Delete your Go-Zoon account? This removes your saved addresses and profile and cannot be undone.')) return;
+    if (!window.confirm('This is permanent. Are you absolutely sure you want to delete your account?')) return;
+    setIsDeletingAccount(true);
+    try {
+      const res = await fetchApi('/api/customers/me', { method: 'DELETE' });
+      if (res.ok) {
+        setIsAccountOpen(false);
+        onLogout();
+      }
+    } catch (err) {
+      console.error('[Account] Failed to delete account:', err);
+    } finally {
+      setIsDeletingAccount(false);
+    }
+  };
+
   // Post-delivery courier rating (separate from the restaurant rating)
   const [courierRatingValue, setCourierRatingValue] = useState(5);
+
+  // Notification center - real per-customer notifications (order updates + promos),
+  // replacing the old static hardcoded promo banner.
+  useEffect(() => {
+    if (!session) return;
+    const fetchNotifications = () => {
+      fetchApi('/api/notifications')
+        .then(res => res.json())
+        .then(data => {
+          if (data?.notifications) setNotifications(data.notifications);
+        })
+        .catch(err => console.error('[Notifications] Failed to load:', err));
+    };
+    fetchNotifications();
+    const interval = setInterval(fetchNotifications, 15000);
+    return () => clearInterval(interval);
+  }, [session]);
+
+  const unreadNotificationCount = notifications.filter(n => !n.read).length;
+
+  const handleMarkNotificationRead = (id: string) => {
+    setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+    fetchApi(`/api/notifications/${id}/read`, { method: 'POST' }).catch(() => {});
+  };
+
+  const handleMarkAllNotificationsRead = () => {
+    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+    fetchApi('/api/notifications/read-all', { method: 'POST' }).catch(() => {});
+  };
 
   const activeOrder = orders.find(o => o.id === activeOrderId);
 
@@ -375,31 +515,37 @@ export default function GoZoonCustomer({
 
   const handleStripeCheckout = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!stripeCardName.trim()) {
-      setStripeError('Please enter the Cardholder Name');
-      return;
-    }
-    if (stripeCardNum.replace(/\s/g, '').length !== 16) {
-      setStripeError('Please enter a valid 16-digit card number');
-      return;
-    }
-    if (!stripeCardExpiry.includes('/')) {
-      setStripeError('Please enter expiry (MM/YY)');
-      return;
-    }
-    if (stripeCardCvc.length < 3) {
-      setStripeError('Please enter 3-digit CVC');
-      return;
+
+    if (paymentMethod === 'Card') {
+      if (!stripeCardName.trim()) {
+        setStripeError('Please enter the Cardholder Name');
+        return;
+      }
+      if (stripeCardNum.replace(/\s/g, '').length !== 16) {
+        setStripeError('Please enter a valid 16-digit card number');
+        return;
+      }
+      if (!stripeCardExpiry.includes('/')) {
+        setStripeError('Please enter expiry (MM/YY)');
+        return;
+      }
+      if (stripeCardCvc.length < 3) {
+        setStripeError('Please enter 3-digit CVC');
+        return;
+      }
     }
 
     setStripeError('');
     setCheckoutStep('processing');
 
-    const statuses = [
+    const statuses = paymentMethod === 'Card' ? [
       'Authenticating card with Stripe server...',
       'Securing escrow authorization code...',
       'E-emitting order docket to restaurant terminal...',
       'Payment Captured! Placing order...'
+    ] : [
+      'Confirming your cash order...',
+      'E-emitting order docket to restaurant terminal...'
     ];
 
     let i = 0;
@@ -419,9 +565,10 @@ export default function GoZoonCustomer({
         onCheckout({
           address: deliveryAddress,
           postcode: currentPostcode.postcode,
-          cardName: stripeCardName,
+          cardName: paymentMethod === 'Card' ? stripeCardName : 'Cash on Delivery',
           restaurantId: selectedRestaurant.id,
           orderMode,
+          paymentMethod,
           tip: tipAmount,
           promoCode: appliedPromo?.code,
           promoDiscountPercent: appliedPromo?.discountPercent,
@@ -432,6 +579,7 @@ export default function GoZoonCustomer({
             setTipAmount(0);
             setAppliedPromo(null);
             setPromoCodeInput('');
+            setPaymentMethod('Card');
             // Clear card inputs
             setStripeCardName('');
             setStripeCardNum('');
@@ -445,6 +593,50 @@ export default function GoZoonCustomer({
         });
       }
     }, 1200);
+  };
+
+  // Plain-text itemized receipt - generated entirely client-side (no PDF/invoicing
+  // service needed) and offered both as an in-app view and a downloadable file.
+  const buildReceiptText = (order: Order): string => {
+    const lines: string[] = [];
+    lines.push('GO-ZOON RECEIPT');
+    lines.push('================');
+    lines.push(`Order #${order.id}`);
+    lines.push(`Date: ${new Date(order.createdAt).toLocaleString()}`);
+    lines.push(`Restaurant: ${order.restaurantName}`);
+    lines.push(`${order.orderMode === 'Collection' ? 'Collection from' : 'Delivered to'}: ${order.orderMode === 'Collection' ? order.restaurantAddress : order.deliveryAddress}`);
+    lines.push(`Payment method: ${order.paymentMethod === 'Cash' ? 'Cash' : 'Card'}`);
+    lines.push('');
+    lines.push('Items');
+    lines.push('-----');
+    order.items.forEach(item => {
+      const itemTotal = (item.menuItem.price + item.customizations.reduce((s, c) => s + c.additionalPrice, 0)) * item.quantity;
+      lines.push(`${item.quantity}x ${item.menuItem.name} - £${itemTotal.toFixed(2)}`);
+      item.customizations.forEach(c => lines.push(`   ${c.name}: ${c.selectedOption}`));
+    });
+    lines.push('');
+    lines.push(`Subtotal: £${order.subtotal.toFixed(2)}`);
+    if (order.discount) lines.push(`Promo discount${order.promoCode ? ` (${order.promoCode})` : ''}: -£${order.discount.toFixed(2)}`);
+    lines.push(`${order.orderMode === 'Collection' ? 'Collection' : 'Delivery'} fee: £${order.deliveryFee.toFixed(2)}`);
+    lines.push(`Platform service fee: £${order.serviceFee.toFixed(2)}`);
+    if (order.vat) lines.push(`VAT (20%, included in prices): £${order.vat.toFixed(2)}`);
+    if (order.tip) lines.push(`Courier tip: £${order.tip.toFixed(2)}`);
+    lines.push(`TOTAL PAID: £${order.total.toFixed(2)}`);
+    lines.push('');
+    lines.push('Thank you for ordering with Go-Zoon.');
+    return lines.join('\n');
+  };
+
+  const handleDownloadReceipt = (order: Order) => {
+    const blob = new Blob([buildReceiptText(order)], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `go-zoon-receipt-${order.id}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   const handleReorder = (order: Order) => {
@@ -567,10 +759,18 @@ export default function GoZoonCustomer({
   // typing in the cart's promo code field) don't force this to recompute from
   // scratch, which was showing up as scroll/navigation jank.
   const filteredRestaurants = useMemo(() => restaurantsList.filter(restaurant => {
-    const matchesSearch = searchQuery.trim() === '' ||
-      restaurant.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      restaurant.cuisine.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      restaurant.menu.some(item => item.name.toLowerCase().includes(searchQuery.toLowerCase()));
+    const q = searchQuery.trim().toLowerCase();
+    const matchesSearch = q === '' ||
+      restaurant.name.toLowerCase().includes(q) ||
+      restaurant.cuisine.toLowerCase().includes(q) ||
+      restaurant.address.toLowerCase().includes(q) ||
+      restaurant.postcode.toLowerCase().includes(q) ||
+      restaurant.menu.some(item => item.name.toLowerCase().includes(q));
+
+    // "Nearby Restaurants": the default browse list is limited to a real delivery
+    // radius around the selected postcode. An active search overrides this - typing
+    // a location (e.g. "Camden") should surface a match anywhere, not just nearby.
+    const matchesDistance = q !== '' || haversineDistanceKm(currentPostcode, restaurant) <= NEARBY_RADIUS_KM;
 
     let matchesFilter = true;
     if (activeFilter === 'Offers') {
@@ -603,7 +803,7 @@ export default function GoZoonCustomer({
       }
     }
 
-    return matchesSearch && matchesFilter && matchesHeroCategory;
+    return matchesSearch && matchesDistance && matchesFilter && matchesHeroCategory;
   }), [restaurantsList, searchQuery, activeFilter, selectedCategoryHero, currentPostcode]);
 
   // Average menu item price used as a "Price" sort proxy - restaurants don't carry
@@ -626,6 +826,15 @@ export default function GoZoonCustomer({
 
   const showDiscoverySections = !searchQuery.trim() && !selectedCategoryHero && activeFilter === 'All';
   const featuredRestaurants = restaurantsList.filter(r => r.featured);
+
+  // "Popular Near You" - the most-reviewed restaurants within actual delivery
+  // distance of the selected postcode, distinct from the curated Featured flag.
+  const popularNearYou = useMemo(() => {
+    return restaurantsList
+      .filter(r => haversineDistanceKm(currentPostcode, r) <= NEARBY_RADIUS_KM)
+      .sort((a, b) => b.reviewsCount - a.reviewsCount)
+      .slice(0, 5);
+  }, [restaurantsList, currentPostcode]);
   const recentlyOrderedRestaurants = useMemo(() => {
     const seen = new Set<string>();
     const list: Restaurant[] = [];
@@ -765,6 +974,19 @@ export default function GoZoonCustomer({
           </div>
 
           <button
+            onClick={() => setIsNotificationsOpen(true)}
+            className="flex items-center justify-center p-1.5 bg-slate-100 hover:bg-slate-200 rounded-full text-slate-700 relative cursor-pointer"
+            title="Notifications"
+          >
+            <Bell className="w-4 h-4 text-brand-blue" />
+            {unreadNotificationCount > 0 && (
+              <span className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-brand-orange text-white text-[8px] font-black rounded-full flex items-center justify-center border border-white">
+                {unreadNotificationCount}
+              </span>
+            )}
+          </button>
+
+          <button
             onClick={() => {
               setIsOrdersOpen(true);
               setIsCartOpen(false);
@@ -802,12 +1024,18 @@ export default function GoZoonCustomer({
             <h3 className="text-lg font-black text-slate-900 mt-2">
               {activeOrder.status === 'Placed' && 'Kitchen Acceptance...'}
               {activeOrder.status === 'Preparing' && 'Food is Cooking!'}
+              {activeOrder.status === 'ReadyForPickup' && 'Ready for Pickup'}
+              {activeOrder.status === 'DriverArrived' && 'Courier at the Kitchen'}
+              {activeOrder.status === 'PickedUp' && 'Order Collected!'}
               {activeOrder.status === 'OutForDelivery' && 'Rider en Route'}
               {(activeOrder.status as string) === 'Delivered' && 'Delivered!'}
             </h3>
             <p className="text-xs text-brand-orange font-bold mt-1">
               {activeOrder.status === 'Placed' && 'Restaurant is receiving your ticket...'}
               {activeOrder.status === 'Preparing' && 'Freshly baking your traditional British dish...'}
+              {activeOrder.status === 'ReadyForPickup' && (activeOrder.driverName ? `${activeOrder.driverName} is heading to the restaurant...` : 'Waiting for a courier to accept this delivery...')}
+              {activeOrder.status === 'DriverArrived' && `${activeOrder.driverName || 'Your courier'} has arrived and is collecting your order...`}
+              {activeOrder.status === 'PickedUp' && `${activeOrder.driverName || 'Your courier'} is about to set off with your food...`}
               {activeOrder.status === 'OutForDelivery' && `${activeOrder.driverName || 'Rider'} is driving at 15mph`}
             </p>
           </div>
@@ -861,16 +1089,24 @@ export default function GoZoonCustomer({
 
           {/* Courier profile */}
           <div className="bg-white rounded-xl border border-slate-150 p-3.5 space-y-3.5 shadow-xs">
-            <h4 className="text-xs font-black text-slate-800">Your Courier Assigned</h4>
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-brand-blue/10 flex items-center justify-center font-black text-brand-blue text-sm border border-brand-blue/15">
-                {(activeOrder.driverName || 'Dave').slice(0,2).toUpperCase()}
+            <h4 className="text-xs font-black text-slate-800">
+              {activeOrder.orderMode === 'Collection' ? 'Collection Order' : activeOrder.driverName ? 'Your Courier' : 'Courier Assignment'}
+            </h4>
+            {activeOrder.orderMode === 'Collection' ? (
+              <p className="text-[11px] text-slate-500">No courier needed - collect your order directly from {activeOrder.restaurantName}.</p>
+            ) : activeOrder.driverName ? (
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-brand-blue/10 flex items-center justify-center font-black text-brand-blue text-sm border border-brand-blue/15">
+                  {activeOrder.driverName.slice(0, 2).toUpperCase()}
+                </div>
+                <div className="text-xs">
+                  <div className="font-bold text-slate-900">{activeOrder.driverName}</div>
+                  <div className="text-slate-400 font-semibold text-[10px]">Active Rider • London Fleet</div>
+                </div>
               </div>
-              <div className="text-xs">
-                <div className="font-bold text-slate-900">{activeOrder.driverName || 'Dave Henderson'}</div>
-                <div className="text-slate-400 font-semibold text-[10px]">Active Rider • London Fleet</div>
-              </div>
-            </div>
+            ) : (
+              <p className="text-[11px] text-slate-500">Waiting for a Road King courier to accept this delivery...</p>
+            )}
             <div className="grid grid-cols-2 gap-2">
               <a
                 href={activeOrder.driverPhone ? `tel:${activeOrder.driverPhone.replace(/\s+/g, '')}` : undefined}
@@ -1195,6 +1431,34 @@ export default function GoZoonCustomer({
             </div>
           )}
 
+          {/* Popular Near You - most-reviewed restaurants within actual delivery distance */}
+          {showDiscoverySections && popularNearYou.length > 0 && (
+            <div className="p-3 bg-white border-b border-slate-100 flex-shrink-0">
+              <div className="flex items-center gap-1.5 mb-2">
+                <TrendingUp className="w-3.5 h-3.5 text-brand-blue" />
+                <h3 className="font-extrabold text-xs text-slate-800">Popular Near You</h3>
+              </div>
+              <div className="flex gap-2.5 overflow-x-auto no-scrollbar">
+                {popularNearYou.map(rest => (
+                  <button
+                    key={rest.id}
+                    onClick={() => selectRestaurantSafely(rest)}
+                    className="flex-shrink-0 w-32 text-left cursor-pointer group"
+                  >
+                    <div className="w-32 h-20 rounded-lg overflow-hidden border border-slate-150 bg-slate-100">
+                      {rest.image && <img src={rest.image} alt={rest.name} referrerPolicy="no-referrer" className="w-full h-full object-cover" />}
+                    </div>
+                    <span className="block text-[10px] font-bold text-slate-700 truncate mt-1 group-hover:text-brand-blue">{rest.name}</span>
+                    <span className="flex items-center gap-0.5 text-[9px] font-semibold text-slate-400">
+                      <MessageSquare className="w-2.5 h-2.5" />
+                      {rest.reviewsCount} reviews
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Quick Categories horizontal carousel */}
           <div className="p-3 bg-white border-b border-slate-100 flex gap-2 overflow-x-auto no-scrollbar flex-shrink-0">
             {[
@@ -1271,6 +1535,7 @@ export default function GoZoonCustomer({
             ) : (
               sortedRestaurants.map(rest => {
                 const isClosed = closedRestaurants.includes(rest.id);
+                const distanceKm = haversineDistanceKm(currentPostcode, rest);
                 return (
                   <div
                     key={rest.id}
@@ -1303,6 +1568,10 @@ export default function GoZoonCustomer({
                       <div className="text-[10px] text-slate-400 font-semibold flex justify-between">
                         <span>{rest.cuisine}</span>
                         <span>{Math.round(rest.deliveryTimeRange[0] * currentPostcode.deliveryMultiplier)}-{Math.round(rest.deliveryTimeRange[1] * currentPostcode.deliveryMultiplier)} mins</span>
+                      </div>
+                      <div className="flex items-center gap-0.5 text-[9px] text-slate-400 font-semibold">
+                        <MapPin className="w-2.5 h-2.5" />
+                        <span>{distanceKm.toFixed(1)} km away</span>
                       </div>
                     </div>
                   </div>
@@ -1547,6 +1816,33 @@ export default function GoZoonCustomer({
                     </span>
                   </div>
 
+                  {/* Payment Method */}
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wide">Payment Method</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setPaymentMethod('Card')}
+                        className={`h-9 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer ${
+                          paymentMethod === 'Card' ? 'border-brand-blue bg-brand-blue/5 text-brand-blue' : 'border-slate-200 text-slate-500'
+                        }`}
+                      >
+                        <CreditCard className="w-3.5 h-3.5" />
+                        <span>Card</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPaymentMethod('Cash')}
+                        className={`h-9 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer ${
+                          paymentMethod === 'Cash' ? 'border-brand-blue bg-brand-blue/5 text-brand-blue' : 'border-slate-200 text-slate-500'
+                        }`}
+                      >
+                        <Banknote className="w-3.5 h-3.5" />
+                        <span>Cash on {isCollection ? 'Collection' : 'Delivery'}</span>
+                      </button>
+                    </div>
+                  </div>
+
                   {belowMinOrder && (
                     <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-2.5 text-[10px] font-semibold">
                       This restaurant requires a minimum order of £{selectedRestaurant.minOrder.toFixed(2)}. Add £{(selectedRestaurant.minOrder - cartSubtotal).toFixed(2)} more to check out.
@@ -1666,32 +1962,45 @@ export default function GoZoonCustomer({
                     </div>
                   </div>
 
-                  {/* Stripe Checkout Transition */}
+                  {/* Checkout Transition */}
                   <button
                     onClick={() => setCheckoutStep('stripe')}
                     disabled={belowMinOrder}
                     className="w-full h-11 bg-brand-orange hover:bg-brand-orange/95 text-white font-black rounded-lg flex items-center justify-center gap-1.5 shadow-md disabled:opacity-40 disabled:cursor-not-allowed"
                   >
-                    <CreditCard className="w-4 h-4" />
-                    <span>Secure Checkout with Stripe</span>
+                    {paymentMethod === 'Card' ? <CreditCard className="w-4 h-4" /> : <Banknote className="w-4 h-4" />}
+                    <span>{paymentMethod === 'Card' ? 'Secure Checkout with Stripe' : 'Continue to Confirm Order'}</span>
                   </button>
                 </>
               )}
 
-              {/* STRIPE PAYMENT CONTAINER */}
+              {/* PAYMENT CONTAINER (Card via simulated Stripe, or Cash) */}
               {checkoutStep === 'stripe' && (
                 <form onSubmit={handleStripeCheckout} className="space-y-4">
-                  <div className="bg-slate-900 text-white p-3 rounded-lg border border-slate-800 space-y-1 shadow-inner font-mono text-[10px]">
-                    <div className="flex justify-between text-brand-orange font-bold uppercase tracking-wider text-[9px]">
-                      <span>Stripe Checkout Node</span>
-                      <span>SECURE SSL</span>
+                  {paymentMethod === 'Card' ? (
+                    <div className="bg-slate-900 text-white p-3 rounded-lg border border-slate-800 space-y-1 shadow-inner font-mono text-[10px]">
+                      <div className="flex justify-between text-brand-orange font-bold uppercase tracking-wider text-[9px]">
+                        <span>Stripe Checkout Node</span>
+                        <span>SECURE SSL</span>
+                      </div>
+                      <div className="text-slate-300">Merchant: Go-Zoon UK Limited</div>
+                      <div className="text-slate-300">Amount: £{grandTotal.toFixed(2)}</div>
+                      <div className="text-[9px] text-slate-400 mt-2 border-t border-slate-800 pt-1.5 font-bold">
+                        💳 TEST CARD: Use <span className="text-brand-orange">4242 4242 4242 4242</span> for card credentials.
+                      </div>
                     </div>
-                    <div className="text-slate-300">Merchant: Go-Zoon UK Limited</div>
-                    <div className="text-slate-300">Amount: £{grandTotal.toFixed(2)}</div>
-                    <div className="text-[9px] text-slate-400 mt-2 border-t border-slate-800 pt-1.5 font-bold">
-                      💳 TEST CARD: Use <span className="text-brand-orange">4242 4242 4242 4242</span> for card credentials.
+                  ) : (
+                    <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 p-3 rounded-lg space-y-1 text-[11px]">
+                      <div className="flex items-center gap-1.5 font-bold uppercase tracking-wider text-[9px] text-emerald-700">
+                        <Banknote className="w-3.5 h-3.5" />
+                        <span>Cash on {isCollection ? 'Collection' : 'Delivery'}</span>
+                      </div>
+                      <p>Amount due: <b>£{grandTotal.toFixed(2)}</b></p>
+                      <p className="text-emerald-700">
+                        {isCollection ? 'Pay in cash at the counter when you collect your order.' : 'Pay your courier in cash when your order arrives.'}
+                      </p>
                     </div>
-                  </div>
+                  )}
 
                   {stripeError && (
                     <div className="bg-red-50 border border-red-100 text-red-600 p-2.5 rounded-lg text-[10px] font-semibold">
@@ -1740,80 +2049,84 @@ export default function GoZoonCustomer({
                       </div>
                     )}
 
-                    <div>
-                      <label className="block text-[10px] font-extrabold text-slate-500 uppercase tracking-wide mb-1">Cardholder Name</label>
-                      <input
-                        type="text"
-                        required
-                        placeholder="John Doe"
-                        value={stripeCardName}
-                        onChange={(e) => setStripeCardName(e.target.value)}
-                        className="w-full h-9 px-2.5 border border-slate-250 rounded-md text-[16px] uppercase"
-                      />
-                    </div>
+                    {paymentMethod === 'Card' && (
+                      <>
+                        <div>
+                          <label className="block text-[10px] font-extrabold text-slate-500 uppercase tracking-wide mb-1">Cardholder Name</label>
+                          <input
+                            type="text"
+                            required
+                            placeholder="John Doe"
+                            value={stripeCardName}
+                            onChange={(e) => setStripeCardName(e.target.value)}
+                            className="w-full h-9 px-2.5 border border-slate-250 rounded-md text-[16px] uppercase"
+                          />
+                        </div>
 
-                    <div>
-                      <label className="block text-[10px] font-extrabold text-slate-500 uppercase tracking-wide mb-1">Card Number (Stripe Test)</label>
-                      <div className="relative">
-                        <input
-                          type="text"
-                          required
-                          maxLength={19}
-                          placeholder="4242 4242 4242 4242"
-                          value={stripeCardNum}
-                          onChange={(e) => {
-                            // add space every 4 digits
-                            const val = e.target.value.replace(/\s+/g, '').replace(/[^0-9]/gi, '');
-                            const matches = val.match(/\d{4,16}/g);
-                            const match = matches && matches[0] || '';
-                            const parts = [];
-                            for (let i=0, len=match.length; i<len; i+=4) {
-                              parts.push(match.substring(i, i+4));
-                            }
-                            if (parts.length > 0) {
-                              setStripeCardNum(parts.join(' '));
-                            } else {
-                              setStripeCardNum(val);
-                            }
-                          }}
-                          className="w-full h-9 pl-8 pr-3 border border-slate-250 rounded-md text-[16px] font-mono"
-                        />
-                        <CreditCard className="absolute left-2.5 top-2.5 w-4 h-4 text-slate-400" />
-                      </div>
-                    </div>
+                        <div>
+                          <label className="block text-[10px] font-extrabold text-slate-500 uppercase tracking-wide mb-1">Card Number (Stripe Test)</label>
+                          <div className="relative">
+                            <input
+                              type="text"
+                              required
+                              maxLength={19}
+                              placeholder="4242 4242 4242 4242"
+                              value={stripeCardNum}
+                              onChange={(e) => {
+                                // add space every 4 digits
+                                const val = e.target.value.replace(/\s+/g, '').replace(/[^0-9]/gi, '');
+                                const matches = val.match(/\d{4,16}/g);
+                                const match = matches && matches[0] || '';
+                                const parts = [];
+                                for (let i=0, len=match.length; i<len; i+=4) {
+                                  parts.push(match.substring(i, i+4));
+                                }
+                                if (parts.length > 0) {
+                                  setStripeCardNum(parts.join(' '));
+                                } else {
+                                  setStripeCardNum(val);
+                                }
+                              }}
+                              className="w-full h-9 pl-8 pr-3 border border-slate-250 rounded-md text-[16px] font-mono"
+                            />
+                            <CreditCard className="absolute left-2.5 top-2.5 w-4 h-4 text-slate-400" />
+                          </div>
+                        </div>
 
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-[10px] font-extrabold text-slate-500 uppercase tracking-wide mb-1">Expiry Date</label>
-                        <input
-                          type="text"
-                          required
-                          placeholder="MM/YY"
-                          maxLength={5}
-                          value={stripeCardExpiry}
-                          onChange={(e) => {
-                            let val = e.target.value.replace(/\D/g, '');
-                            if (val.length > 2) {
-                              val = `${val.slice(0, 2)}/${val.slice(2, 4)}`;
-                            }
-                            setStripeCardExpiry(val);
-                          }}
-                          className="w-full h-9 px-2.5 border border-slate-250 rounded-md text-[16px] font-mono"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-extrabold text-slate-500 uppercase tracking-wide mb-1">CVC Code</label>
-                        <input
-                          type="password"
-                          required
-                          placeholder="123"
-                          maxLength={3}
-                          value={stripeCardCvc}
-                          onChange={(e) => setStripeCardCvc(e.target.value.replace(/\D/g, ''))}
-                          className="w-full h-9 px-2.5 border border-slate-250 rounded-md text-[16px] font-mono"
-                        />
-                      </div>
-                    </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-[10px] font-extrabold text-slate-500 uppercase tracking-wide mb-1">Expiry Date</label>
+                            <input
+                              type="text"
+                              required
+                              placeholder="MM/YY"
+                              maxLength={5}
+                              value={stripeCardExpiry}
+                              onChange={(e) => {
+                                let val = e.target.value.replace(/\D/g, '');
+                                if (val.length > 2) {
+                                  val = `${val.slice(0, 2)}/${val.slice(2, 4)}`;
+                                }
+                                setStripeCardExpiry(val);
+                              }}
+                              className="w-full h-9 px-2.5 border border-slate-250 rounded-md text-[16px] font-mono"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-extrabold text-slate-500 uppercase tracking-wide mb-1">CVC Code</label>
+                            <input
+                              type="password"
+                              required
+                              placeholder="123"
+                              maxLength={3}
+                              value={stripeCardCvc}
+                              onChange={(e) => setStripeCardCvc(e.target.value.replace(/\D/g, ''))}
+                              className="w-full h-9 px-2.5 border border-slate-250 rounded-md text-[16px] font-mono"
+                            />
+                          </div>
+                        </div>
+                      </>
+                    )}
                   </div>
 
                   <p className="text-[9px] text-slate-400 text-center">
@@ -1835,7 +2148,7 @@ export default function GoZoonCustomer({
                       type="submit"
                       className="flex-1 h-10 bg-brand-orange hover:bg-brand-orange/95 text-white font-black rounded-lg shadow-md flex items-center justify-center gap-1"
                     >
-                      <span>Pay £{grandTotal.toFixed(2)} via Stripe</span>
+                      <span>{paymentMethod === 'Card' ? `Pay £${grandTotal.toFixed(2)} via Stripe` : `Place Order • £${grandTotal.toFixed(2)}`}</span>
                     </button>
                   </div>
                 </form>
@@ -1847,10 +2160,14 @@ export default function GoZoonCustomer({
                 <div className="h-64 flex flex-col items-center justify-center text-center space-y-4">
                   <div className="relative">
                     <div className="w-12 h-12 border-4 border-brand-orange/20 border-t-brand-orange rounded-full animate-spin"></div>
-                    <CreditCard className="w-5 h-5 text-brand-orange absolute left-3.5 top-3.5 animate-pulse" />
+                    {paymentMethod === 'Card' ? (
+                      <CreditCard className="w-5 h-5 text-brand-orange absolute left-3.5 top-3.5 animate-pulse" />
+                    ) : (
+                      <Banknote className="w-5 h-5 text-brand-orange absolute left-3.5 top-3.5 animate-pulse" />
+                    )}
                   </div>
                   <div className="space-y-1">
-                    <h4 className="font-extrabold text-slate-950">Processing Stripe payment</h4>
+                    <h4 className="font-extrabold text-slate-950">{paymentMethod === 'Card' ? 'Processing Stripe payment' : 'Confirming your order'}</h4>
                     <p className="text-[10px] font-semibold text-slate-400 font-mono animate-pulse">{processingStatus}</p>
                   </div>
                 </div>
@@ -1919,11 +2236,14 @@ export default function GoZoonCustomer({
                           <span className={`text-[8px] font-black uppercase px-2 py-0.5 rounded-full ${
                             order.status === 'Placed' ? 'bg-blue-100 text-blue-700' :
                             order.status === 'Preparing' ? 'bg-amber-100 text-amber-700' :
-                            order.status === 'OutForDelivery' ? 'bg-orange-100 text-orange-700 animate-pulse' :
                             order.status === 'Delivered' ? 'bg-emerald-100 text-emerald-700' :
-                            'bg-red-100 text-red-700'
+                            order.status === 'Cancelled' ? 'bg-red-100 text-red-700' :
+                            'bg-orange-100 text-orange-700 animate-pulse'
                           }`}>
-                            {order.status}
+                            {order.status === 'ReadyForPickup' ? 'Ready for Pickup' :
+                             order.status === 'DriverArrived' ? 'Courier at Kitchen' :
+                             order.status === 'PickedUp' ? 'Picked Up' :
+                             order.status === 'OutForDelivery' ? 'Out for Delivery' : order.status}
                           </span>
                         </div>
 
@@ -1945,6 +2265,13 @@ export default function GoZoonCustomer({
                           </div>
 
                           <div className="flex gap-1.5">
+                            <button
+                              onClick={() => setReceiptOrder(order)}
+                              className="px-2.5 h-7 border border-slate-200 text-slate-600 rounded-lg font-bold text-[9px] flex items-center gap-1 hover:bg-slate-50 cursor-pointer"
+                            >
+                              <FileText className="w-3 h-3" />
+                              <span>Receipt</span>
+                            </button>
                             {isActive ? (
                               <button
                                 onClick={() => {
@@ -2115,12 +2442,246 @@ export default function GoZoonCustomer({
                 )}
               </div>
 
+              {/* Security: MPIN quick-login */}
+              <div className="space-y-2">
+                <div className="flex items-center gap-1.5">
+                  <KeyRound className="w-3.5 h-3.5 text-brand-blue" />
+                  <h4 className="font-extrabold text-slate-800 text-xs">Security - MPIN</h4>
+                </div>
+                {hasMpin ? (
+                  <div className="bg-emerald-50 border border-emerald-150 rounded-xl p-3 flex items-center justify-between gap-2">
+                    <p className="text-[10.5px] text-emerald-800">MPIN is set up - you can log in faster next time.</p>
+                    <button onClick={handleRemoveMpin} className="text-[10px] text-red-500 font-bold cursor-pointer flex-shrink-0">Remove</button>
+                  </div>
+                ) : (
+                  <form onSubmit={handleSetMpin} className="bg-slate-50 border border-slate-150 rounded-xl p-3 space-y-2">
+                    <p className="text-[10px] text-slate-500">Set a 4-6 digit MPIN to skip OTP next time you log in.</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <input
+                        type="password"
+                        placeholder="New MPIN"
+                        maxLength={6}
+                        value={mpinInput}
+                        onChange={(e) => setMpinInput(e.target.value.replace(/\D/g, ''))}
+                        className="w-full h-8 px-2.5 border border-slate-200 rounded-md text-[16px] font-mono tracking-widest"
+                      />
+                      <input
+                        type="password"
+                        placeholder="Confirm MPIN"
+                        maxLength={6}
+                        value={mpinConfirmInput}
+                        onChange={(e) => setMpinConfirmInput(e.target.value.replace(/\D/g, ''))}
+                        className="w-full h-8 px-2.5 border border-slate-200 rounded-md text-[16px] font-mono tracking-widest"
+                      />
+                    </div>
+                    {mpinError && <p className="text-[10px] text-red-500 font-semibold">{mpinError}</p>}
+                    {mpinSaved && <p className="text-[10px] text-emerald-600 font-bold">✓ MPIN saved</p>}
+                    <button type="submit" disabled={mpinSaving} className="w-full h-8 bg-brand-orange text-white font-bold rounded-md text-[11px] disabled:opacity-50">
+                      {mpinSaving ? 'Saving...' : 'Set MPIN'}
+                    </button>
+                  </form>
+                )}
+              </div>
+
+              <button
+                onClick={() => setIsSupportOpen(true)}
+                className="w-full h-10 border border-slate-200 text-slate-700 font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 cursor-pointer hover:bg-slate-50"
+              >
+                <LifeBuoy className="w-3.5 h-3.5 text-brand-blue" />
+                <span>Help &amp; Support</span>
+              </button>
+
               <button
                 onClick={() => { setIsAccountOpen(false); onLogout(); }}
                 className="w-full h-10 border border-red-200 text-red-600 font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 cursor-pointer"
               >
                 <LogOut className="w-3.5 h-3.5" />
                 <span>Log Out</span>
+              </button>
+
+              <button
+                onClick={handleDeleteAccount}
+                disabled={isDeletingAccount}
+                className="w-full h-9 text-red-400 hover:text-red-600 font-bold text-[10px] flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                <Trash2 className="w-3 h-3" />
+                <span>{isDeletingAccount ? 'Deleting...' : 'Delete Account'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Help & Support */}
+      {isSupportOpen && (
+        <div className="absolute inset-0 bg-black/60 backdrop-blur-xs flex items-end z-50">
+          <div className="w-full bg-white rounded-t-2xl max-h-[85%] flex flex-col animate-in slide-in-from-bottom duration-200 text-xs">
+            <div className="p-3.5 border-b border-slate-100 flex justify-between items-center flex-shrink-0">
+              <div className="flex items-center gap-1.5 font-black text-slate-900 text-sm">
+                <HelpCircle className="w-4 h-4 text-brand-blue" />
+                <span>Help &amp; Support</span>
+              </div>
+              <button onClick={() => { setIsSupportOpen(false); setSupportSent(false); }} className="text-slate-400 hover:text-black cursor-pointer">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              <div className="space-y-2.5">
+                <h4 className="font-extrabold text-slate-800 text-xs">Frequently Asked Questions</h4>
+                {[
+                  { q: 'How do I cancel an order?', a: "You can cancel for free from the live tracking screen, as long as the restaurant hasn't accepted it yet." },
+                  { q: 'My order is late - what happens?', a: 'Check the live tracker for status. If it\'s significantly overdue, send us a message below with your order number and we\'ll look into it.' },
+                  { q: 'How do refunds work?', a: 'Approved refunds are returned to your original payment method, typically within 3-5 business days.' },
+                  { q: 'Can I change my delivery address after ordering?', a: 'Not once the order is placed - please cancel (if still possible) and reorder with the correct address.' },
+                ].map((item, idx) => (
+                  <div key={idx} className="bg-slate-50 border border-slate-100 rounded-lg p-2.5">
+                    <p className="font-bold text-slate-800 text-[11px]">{item.q}</p>
+                    <p className="text-slate-500 text-[10.5px] mt-0.5 leading-snug">{item.a}</p>
+                  </div>
+                ))}
+              </div>
+
+              <form onSubmit={handleSendSupportMessage} className="space-y-2 border-t border-slate-100 pt-3">
+                <h4 className="font-extrabold text-slate-800 text-xs">Still need help? Send us a message</h4>
+                {supportSent ? (
+                  <p className="text-[11px] text-emerald-600 font-bold">✓ Thanks - we've received your message and will get back to you.</p>
+                ) : (
+                  <>
+                    <textarea
+                      placeholder="Describe your issue, including an order number if relevant..."
+                      value={supportMessage}
+                      onChange={(e) => setSupportMessage(e.target.value)}
+                      className="w-full h-20 p-2.5 border border-slate-200 rounded-lg text-[16px] resize-none"
+                    />
+                    <button
+                      type="submit"
+                      disabled={supportSending || !supportMessage.trim()}
+                      className="w-full h-9 bg-brand-orange text-white font-bold rounded-lg text-xs disabled:opacity-50 cursor-pointer"
+                    >
+                      {supportSending ? 'Sending...' : 'Send Message'}
+                    </button>
+                  </>
+                )}
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Notification Center */}
+      {isNotificationsOpen && (
+        <div className="absolute inset-0 bg-black/60 backdrop-blur-xs z-40 flex flex-col justify-end">
+          <div className="absolute inset-0" onClick={() => setIsNotificationsOpen(false)}></div>
+          <div className="w-full bg-white rounded-t-2xl h-[80%] max-h-[80%] flex flex-col z-10 animate-in slide-in-from-bottom duration-300 text-xs">
+            <div className="p-3.5 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-2xl shrink-0">
+              <div className="flex items-center gap-1.5 font-black text-slate-900 text-sm">
+                <Bell className="w-4 h-4 text-brand-blue" />
+                <span>Notifications</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {unreadNotificationCount > 0 && (
+                  <button onClick={handleMarkAllNotificationsRead} className="text-[10px] font-bold text-brand-blue cursor-pointer">
+                    Mark all read
+                  </button>
+                )}
+                <button onClick={() => setIsNotificationsOpen(false)} className="text-xs font-bold text-slate-400 hover:text-slate-900 px-2 py-1 bg-slate-200/50 rounded-md cursor-pointer">
+                  Close
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-2.5">
+              {notifications.length === 0 ? (
+                <div className="h-48 flex flex-col items-center justify-center text-center space-y-2">
+                  <Bell className="w-8 h-8 text-slate-300" />
+                  <p className="text-[11px] text-slate-400 max-w-[200px]">Order updates and offers will show up here.</p>
+                </div>
+              ) : (
+                notifications.map(n => (
+                  <button
+                    key={n.id}
+                    onClick={() => handleMarkNotificationRead(n.id)}
+                    className={`w-full text-left p-3 rounded-xl border space-y-1 cursor-pointer ${n.read ? 'bg-white border-slate-100' : 'bg-brand-blue/5 border-brand-blue/20'}`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-1.5 font-extrabold text-slate-800 text-[11px]">
+                        {n.type === 'promo' ? <Tag className="w-3 h-3 text-brand-orange" /> : <ClipboardList className="w-3 h-3 text-brand-blue" />}
+                        {n.title}
+                      </span>
+                      {!n.read && <span className="w-1.5 h-1.5 rounded-full bg-brand-orange flex-shrink-0"></span>}
+                    </div>
+                    <p className="text-slate-500 text-[10.5px] leading-snug">{n.body}</p>
+                    <span className="block text-[9px] text-slate-400">{new Date(n.createdAt).toLocaleString()}</span>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Order Receipt / Invoice */}
+      {receiptOrder && (
+        <div className="absolute inset-0 bg-black/60 backdrop-blur-xs flex items-end z-50">
+          <div className="w-full bg-white rounded-t-2xl max-h-[85%] flex flex-col animate-in slide-in-from-bottom duration-200 text-xs">
+            <div className="p-3.5 border-b border-slate-100 flex justify-between items-center flex-shrink-0">
+              <div className="flex items-center gap-1.5 font-black text-slate-900 text-sm">
+                <FileText className="w-4 h-4 text-brand-blue" />
+                <span>Receipt #{receiptOrder.id}</span>
+              </div>
+              <button onClick={() => setReceiptOrder(null)} className="text-slate-400 hover:text-black cursor-pointer">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              <div className="text-[10px] text-slate-500 space-y-0.5">
+                <p><span className="font-bold text-slate-800">{receiptOrder.restaurantName}</span></p>
+                <p>{new Date(receiptOrder.createdAt).toLocaleString()}</p>
+                <p>{receiptOrder.orderMode === 'Collection' ? 'Collection from' : 'Delivered to'}: {receiptOrder.orderMode === 'Collection' ? receiptOrder.restaurantAddress : receiptOrder.deliveryAddress}</p>
+                <p>Payment: {receiptOrder.paymentMethod === 'Cash' ? 'Cash' : 'Card'}</p>
+              </div>
+
+              <div className="border-t border-slate-100 pt-2 space-y-1.5">
+                {receiptOrder.items.map(item => (
+                  <div key={item.id} className="text-[11px]">
+                    <div className="flex justify-between font-semibold text-slate-700">
+                      <span>{item.quantity}x {item.menuItem.name}</span>
+                      <span>£{((item.menuItem.price + item.customizations.reduce((s, c) => s + c.additionalPrice, 0)) * item.quantity).toFixed(2)}</span>
+                    </div>
+                    {item.customizations.length > 0 && (
+                      <span className="text-[9px] text-slate-400 block">{item.customizations.map(c => `${c.name}: ${c.selectedOption}`).join(', ')}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              <div className="border-t border-slate-100 pt-2 space-y-1 text-slate-500">
+                <div className="flex justify-between"><span>Subtotal</span><span className="font-semibold text-slate-800">£{receiptOrder.subtotal.toFixed(2)}</span></div>
+                {!!receiptOrder.discount && (
+                  <div className="flex justify-between text-emerald-600"><span>Promo Discount{receiptOrder.promoCode ? ` (${receiptOrder.promoCode})` : ''}</span><span className="font-semibold">-£{receiptOrder.discount.toFixed(2)}</span></div>
+                )}
+                <div className="flex justify-between"><span>{receiptOrder.orderMode === 'Collection' ? 'Collection' : 'Delivery'} Fee</span><span className="font-semibold text-slate-800">£{receiptOrder.deliveryFee.toFixed(2)}</span></div>
+                <div className="flex justify-between"><span>Platform Service Fee</span><span className="font-semibold text-slate-800">£{receiptOrder.serviceFee.toFixed(2)}</span></div>
+                {!!receiptOrder.vat && (
+                  <div className="flex justify-between text-slate-400"><span>VAT (20%, included)</span><span className="font-semibold">£{receiptOrder.vat.toFixed(2)}</span></div>
+                )}
+                {!!receiptOrder.tip && (
+                  <div className="flex justify-between"><span>Courier Tip</span><span className="font-semibold text-slate-800">£{receiptOrder.tip.toFixed(2)}</span></div>
+                )}
+                <div className="flex justify-between font-extrabold text-slate-950 pt-2 border-t border-slate-200">
+                  <span>Total Paid</span>
+                  <span>£{receiptOrder.total.toFixed(2)}</span>
+                </div>
+              </div>
+
+              <button
+                onClick={() => handleDownloadReceipt(receiptOrder)}
+                className="w-full h-9 bg-brand-blue hover:bg-brand-blue/90 text-white font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Download Receipt</span>
               </button>
             </div>
           </div>

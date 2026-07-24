@@ -7,7 +7,7 @@ import { initializeApp, cert, getApps, getApp } from 'firebase-admin/app';
 import { getFirestore as getAdminFirestore, Firestore } from 'firebase-admin/firestore';
 import { getDatabase as getAdminDatabase, Database } from 'firebase-admin/database';
 import dotenv from 'dotenv';
-import { randomUUID } from 'crypto';
+import { randomUUID, randomBytes, scryptSync, timingSafeEqual } from 'crypto';
 import { UK_RESTAURANTS, validateUKPostcode } from './src/data/restaurants';
 import type { Restaurant, MenuItem } from './src/types';
 
@@ -28,12 +28,32 @@ const memoryDb = {
   closedRestaurants: [] as string[],
   outOfStockItems: [] as string[],
   drivers: [] as { name: string; phone: string; vehicle: string }[],
-  customers: [] as { id: string; phone: string; name?: string | null; notifyOrderUpdates?: boolean; notifyPromotions?: boolean }[],
+  customers: [] as { id: string; phone: string; name?: string | null; notifyOrderUpdates?: boolean; notifyPromotions?: boolean; mpinHash?: string | null }[],
   sessions: {} as Record<string, string>, // token -> customerId
   addresses: [] as any[],
   reviews: [] as any[],
+  notifications: [] as any[],
+  supportMessages: [] as any[],
   promoCodes: { CHIPPY10: 10 } as Record<string, number>,
 };
+
+// MPIN hashing - scrypt (Node built-in, no extra dependency) with a random salt per
+// customer. Stored as "salt:hash" hex in a single column.
+function hashMpin(mpin: string): string {
+  const salt = randomBytes(16).toString('hex');
+  const hash = scryptSync(mpin, salt, 64).toString('hex');
+  return `${salt}:${hash}`;
+}
+
+function verifyMpin(mpin: string, stored: string | null | undefined): boolean {
+  if (!stored) return false;
+  const [salt, hash] = stored.split(':');
+  if (!salt || !hash) return false;
+  const candidate = scryptSync(mpin, salt, 64);
+  const expected = Buffer.from(hash, 'hex');
+  if (candidate.length !== expected.length) return false;
+  return timingSafeEqual(candidate, expected);
+}
 
 // PostgreSQL connection pool (Lazy initialized)
 let pgPool: Pool | null = null;
@@ -212,6 +232,7 @@ function mapRowToOrder(row: any): any {
     total: Number(row.total),
     status: row.status,
     orderMode: row.order_mode || 'Delivery',
+    paymentMethod: row.payment_method || 'Card',
     deliveryAddress: row.delivery_address || '',
     deliveryPostcode: row.delivery_postcode || row.postcode || '',
     driverName: row.driver_name || undefined,
@@ -377,7 +398,29 @@ async function bootstrapPostgres() {
       ALTER TABLE customers ADD COLUMN IF NOT EXISTS name VARCHAR(100);
       ALTER TABLE customers ADD COLUMN IF NOT EXISTS notify_order_updates BOOLEAN DEFAULT TRUE;
       ALTER TABLE customers ADD COLUMN IF NOT EXISTS notify_promotions BOOLEAN DEFAULT TRUE;
+      ALTER TABLE customers ADD COLUMN IF NOT EXISTS mpin_hash VARCHAR(200);
       ALTER TABLE reviews ADD COLUMN IF NOT EXISTS courier_rating SMALLINT;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_method VARCHAR(20) DEFAULT 'Card';
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id VARCHAR(50) PRIMARY KEY,
+        customer_id VARCHAR(50) NOT NULL,
+        type VARCHAR(20) NOT NULL,
+        title VARCHAR(200) NOT NULL,
+        body TEXT NOT NULL,
+        order_id VARCHAR(50),
+        read BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE IF NOT EXISTS support_messages (
+        id VARCHAR(50) PRIMARY KEY,
+        customer_id VARCHAR(50) NOT NULL,
+        phone VARCHAR(30),
+        message TEXT NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
     `);
 
     const { rows: existingPromos } = await client.query('SELECT COUNT(*) FROM promo_codes;');
@@ -494,6 +537,51 @@ function broadcastOrderUpdate(customerId: string, order: any) {
   }
 }
 
+// Creates a real, per-customer, DB-backed notification - but only if that customer
+// currently has the relevant preference enabled (notify_order_updates for order
+// events, notify_promotions for marketing/promo events). Replaces the old static
+// hardcoded promo banner with an actually-targeted notification system.
+async function createNotificationIfEnabled(customerId: string, type: 'order' | 'promo', title: string, body: string, orderId?: string) {
+  const pool = getPgPool();
+  let notifyOrderUpdates = true;
+  let notifyPromotions = true;
+
+  if (pool) {
+    try {
+      const result = await pool.query('SELECT notify_order_updates, notify_promotions FROM customers WHERE id = $1;', [customerId]);
+      if (result.rows[0]) {
+        notifyOrderUpdates = result.rows[0].notify_order_updates !== false;
+        notifyPromotions = result.rows[0].notify_promotions !== false;
+      }
+    } catch (err) {
+      console.error('[PostgreSQL] Failed to load notification prefs, defaulting to enabled:', err);
+    }
+  } else {
+    const customer = memoryDb.customers.find(c => c.id === customerId);
+    if (customer) {
+      notifyOrderUpdates = customer.notifyOrderUpdates !== false;
+      notifyPromotions = customer.notifyPromotions !== false;
+    }
+  }
+
+  const allowed = type === 'order' ? notifyOrderUpdates : notifyPromotions;
+  if (!allowed) return;
+
+  const id = randomUUID().replace(/-/g, '').slice(0, 12);
+  if (pool) {
+    try {
+      await pool.query(
+        'INSERT INTO notifications (id, customer_id, type, title, body, order_id) VALUES ($1, $2, $3, $4, $5, $6);',
+        [id, customerId, type, title, body, orderId || null]
+      );
+      return;
+    } catch (err) {
+      console.error('[PostgreSQL] Failed to insert notification, using memory fallback:', err);
+    }
+  }
+  memoryDb.notifications.push({ id, customerId, type, title, body, orderId, read: false, createdAt: new Date().toISOString() });
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -533,8 +621,10 @@ async function startServer() {
       driverName,
       driverPhone,
       tip,
-      promoCode
+      promoCode,
+      paymentMethod
     } = req.body;
+    const resolvedPaymentMethod: 'Card' | 'Cash' = paymentMethod === 'Cash' ? 'Cash' : 'Card';
 
     if (!restaurantId || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Missing order specifications: restaurantId and at least one item are required.' });
@@ -569,9 +659,9 @@ async function startServer() {
           INSERT INTO orders (
             id, customer_id, customer_name, restaurant_id, restaurant_name, restaurant_address,
             items, subtotal, delivery_fee, service_fee, vat, tip, discount, promo_code, total, status,
-            order_mode, delivery_address, delivery_postcode, driver_name, driver_phone, postcode
+            order_mode, delivery_address, delivery_postcode, driver_name, driver_phone, postcode, payment_method
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
           ON CONFLICT (id) DO UPDATE SET
             status = EXCLUDED.status,
             driver_name = COALESCE(EXCLUDED.driver_name, orders.driver_name),
@@ -601,12 +691,14 @@ async function startServer() {
           deliveryPostcode || postcode || '',
           driverName || null,
           driverPhone || null,
-          postcode || deliveryPostcode || ''
+          postcode || deliveryPostcode || '',
+          resolvedPaymentMethod
         ];
         const result = await pool.query(queryText, values);
         console.log(`[PostgreSQL] Order created/updated successfully: #${id}`);
         const order = mapRowToOrder(result.rows[0]);
         broadcastOrderUpdate(sessionCustomerId, order);
+        createNotificationIfEnabled(sessionCustomerId, 'order', 'Order placed', `Your order from ${restaurantName} has been placed (#${id}).`, id).catch(() => {});
         return res.json({ success: true, order, source: 'postgres' });
       } catch (err) {
         console.error('[PostgreSQL] Error inserting order, resorting to memory fallback:', err);
@@ -633,6 +725,7 @@ async function startServer() {
       total,
       status: status || 'Placed',
       orderMode: resolvedOrderMode,
+      paymentMethod: resolvedPaymentMethod,
       deliveryAddress,
       deliveryPostcode,
       driverName,
@@ -647,6 +740,7 @@ async function startServer() {
     }
     console.log(`[MemoryStore] Order updated: #${id} (${status})`);
     broadcastOrderUpdate(sessionCustomerId, orderData);
+    createNotificationIfEnabled(sessionCustomerId, 'order', 'Order placed', `Your order from ${restaurantName} has been placed (#${id}).`, id).catch(() => {});
     return res.json({ success: true, order: orderData, source: 'memory' });
   });
 
@@ -654,6 +748,15 @@ async function startServer() {
   app.patch('/api/orders/:id', async (req, res) => {
     const { id } = req.params;
     const { status, driverName, driverPhone } = req.body;
+    const statusLabels: Record<string, string> = {
+      Preparing: 'is being prepared by the restaurant',
+      ReadyForPickup: 'is ready and awaiting courier pickup',
+      DriverArrived: "your courier has arrived at the restaurant",
+      PickedUp: 'has been picked up by your courier',
+      OutForDelivery: 'is out for delivery',
+      Delivered: 'has been delivered',
+      Cancelled: 'was cancelled'
+    };
 
     const pool = getPgPool();
     if (pool) {
@@ -672,6 +775,9 @@ async function startServer() {
           console.log(`[PostgreSQL] Status updated for Order #${id}: ${status}`);
           const order = mapRowToOrder(result.rows[0]);
           if (order.customerId) broadcastOrderUpdate(order.customerId, order);
+          if (order.customerId && status && statusLabels[status]) {
+            createNotificationIfEnabled(order.customerId, 'order', 'Order update', `Order #${id} ${statusLabels[status]}.`, id).catch(() => {});
+          }
           return res.json({ success: true, order, source: 'postgres' });
         }
       } catch (err) {
@@ -688,6 +794,9 @@ async function startServer() {
       order.updatedAt = new Date().toISOString();
       console.log(`[MemoryStore] Status updated for Order #${id}: ${status}`);
       if (order.customerId) broadcastOrderUpdate(order.customerId, order);
+      if (order.customerId && status && statusLabels[status]) {
+        createNotificationIfEnabled(order.customerId, 'order', 'Order update', `Order #${id} ${statusLabels[status]}.`, id).catch(() => {});
+      }
       return res.json({ success: true, order, source: 'memory' });
     }
 
@@ -1015,13 +1124,18 @@ async function startServer() {
       try {
         const existing = await pool.query('SELECT id FROM customers WHERE phone = $1;', [phone]);
         let customerId: string;
+        let isNewCustomer = false;
         if (existing.rows.length > 0) {
           customerId = existing.rows[0].id;
         } else {
           customerId = randomUUID().replace(/-/g, '').slice(0, 16);
           await pool.query('INSERT INTO customers (id, phone) VALUES ($1, $2);', [customerId, phone]);
+          isNewCustomer = true;
         }
         await pool.query('INSERT INTO sessions (token, customer_id) VALUES ($1, $2);', [sessionToken, customerId]);
+        if (isNewCustomer) {
+          createNotificationIfEnabled(customerId, 'promo', 'Welcome to Go-Zoon!', 'Use code CHIPPY10 for 10% off your first order.').catch(() => {});
+        }
         return res.json({ success: true, customerId, phone, sessionToken });
       } catch (err) {
         console.error('[PostgreSQL] Error during OTP verification, using memory fallback:', err);
@@ -1032,9 +1146,110 @@ async function startServer() {
     if (!customer) {
       customer = { id: randomUUID().replace(/-/g, '').slice(0, 16), phone };
       memoryDb.customers.push(customer);
+      createNotificationIfEnabled(customer.id, 'promo', 'Welcome to Go-Zoon!', 'Use code CHIPPY10 for 10% off your first order.').catch(() => {});
     }
     memoryDb.sessions[sessionToken] = customer.id;
     return res.json({ success: true, customerId: customer.id, phone, sessionToken });
+  });
+
+  // ===== MPIN (local quick-login PIN, fully self-contained - no SMS/3rd-party) =====
+
+  const isValidMpin = (mpin: unknown): mpin is string => typeof mpin === 'string' && /^\d{4,6}$/.test(mpin);
+
+  app.post('/api/auth/mpin/set', async (req, res) => {
+    const customerId = await getSessionCustomerId(req);
+    if (!customerId) return res.status(401).json({ error: 'Please log in.' });
+    const { mpin } = req.body;
+    if (!isValidMpin(mpin)) {
+      return res.status(400).json({ error: 'MPIN must be 4-6 digits.' });
+    }
+    const mpinHash = hashMpin(mpin);
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        await pool.query('UPDATE customers SET mpin_hash = $1 WHERE id = $2;', [mpinHash, customerId]);
+        return res.json({ success: true });
+      } catch (err) {
+        console.error('[PostgreSQL] Error setting MPIN, using memory fallback:', err);
+      }
+    }
+    const customer = memoryDb.customers.find(c => c.id === customerId);
+    if (!customer) return res.status(404).json({ error: 'Customer not found.' });
+    customer.mpinHash = mpinHash;
+    return res.json({ success: true });
+  });
+
+  app.delete('/api/auth/mpin', async (req, res) => {
+    const customerId = await getSessionCustomerId(req);
+    if (!customerId) return res.status(401).json({ error: 'Please log in.' });
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        await pool.query('UPDATE customers SET mpin_hash = NULL WHERE id = $1;', [customerId]);
+        return res.json({ success: true });
+      } catch (err) {
+        console.error('[PostgreSQL] Error removing MPIN, using memory fallback:', err);
+      }
+    }
+    const customer = memoryDb.customers.find(c => c.id === customerId);
+    if (customer) customer.mpinHash = null;
+    return res.json({ success: true });
+  });
+
+  app.post('/api/auth/mpin/login', async (req, res) => {
+    const phone = normalizePhone(req.body?.phone);
+    const mpin = String(req.body?.mpin || '');
+    if (!phone || !isValidMpin(mpin)) {
+      return res.status(400).json({ error: 'A phone number and 4-6 digit MPIN are required.' });
+    }
+
+    const sessionToken = randomUUID().replace(/-/g, '');
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const result = await pool.query('SELECT id, mpin_hash FROM customers WHERE phone = $1;', [phone]);
+        const row = result.rows[0];
+        if (!row || !verifyMpin(mpin, row.mpin_hash)) {
+          return res.status(401).json({ error: 'Incorrect phone number or MPIN.' });
+        }
+        await pool.query('INSERT INTO sessions (token, customer_id) VALUES ($1, $2);', [sessionToken, row.id]);
+        return res.json({ success: true, customerId: row.id, phone, sessionToken });
+      } catch (err) {
+        console.error('[PostgreSQL] Error during MPIN login, using memory fallback:', err);
+      }
+    }
+    const customer = memoryDb.customers.find(c => c.phone === phone);
+    if (!customer || !verifyMpin(mpin, customer.mpinHash)) {
+      return res.status(401).json({ error: 'Incorrect phone number or MPIN.' });
+    }
+    memoryDb.sessions[sessionToken] = customer.id;
+    return res.json({ success: true, customerId: customer.id, phone, sessionToken });
+  });
+
+  // ===== Delete account =====
+
+  app.delete('/api/customers/me', async (req, res) => {
+    const customerId = await getSessionCustomerId(req);
+    if (!customerId) return res.status(401).json({ error: 'Please log in.' });
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        await pool.query('DELETE FROM sessions WHERE customer_id = $1;', [customerId]);
+        await pool.query('DELETE FROM addresses WHERE customer_id = $1;', [customerId]);
+        await pool.query('DELETE FROM notifications WHERE customer_id = $1;', [customerId]);
+        await pool.query('DELETE FROM customers WHERE id = $1;', [customerId]);
+        return res.json({ success: true });
+      } catch (err) {
+        console.error('[PostgreSQL] Error deleting account, using memory fallback:', err);
+      }
+    }
+    memoryDb.customers = memoryDb.customers.filter(c => c.id !== customerId);
+    memoryDb.addresses = memoryDb.addresses.filter(a => a.customerId !== customerId);
+    memoryDb.notifications = memoryDb.notifications.filter(n => n.customerId !== customerId);
+    Object.keys(memoryDb.sessions).forEach(token => {
+      if (memoryDb.sessions[token] === customerId) delete memoryDb.sessions[token];
+    });
+    return res.json({ success: true });
   });
 
   // Validates a stored session token on app launch so a customer stays logged in.
@@ -1064,12 +1279,13 @@ async function startServer() {
     const pool = getPgPool();
     if (pool) {
       try {
-        const result = await pool.query('SELECT name, notify_order_updates, notify_promotions FROM customers WHERE id = $1;', [customerId]);
+        const result = await pool.query('SELECT name, notify_order_updates, notify_promotions, mpin_hash FROM customers WHERE id = $1;', [customerId]);
         const row = result.rows[0];
         return res.json({
           name: row?.name || null,
           notifyOrderUpdates: row?.notify_order_updates !== false,
-          notifyPromotions: row?.notify_promotions !== false
+          notifyPromotions: row?.notify_promotions !== false,
+          hasMpin: !!row?.mpin_hash
         });
       } catch (err) {
         console.error('[PostgreSQL] Error fetching profile, using memory fallback:', err);
@@ -1079,7 +1295,8 @@ async function startServer() {
     return res.json({
       name: customer?.name || null,
       notifyOrderUpdates: customer?.notifyOrderUpdates !== false,
-      notifyPromotions: customer?.notifyPromotions !== false
+      notifyPromotions: customer?.notifyPromotions !== false,
+      hasMpin: !!customer?.mpinHash
     });
   });
 
@@ -1116,6 +1333,90 @@ async function startServer() {
     if (notifyOrderUpdates !== undefined) customer.notifyOrderUpdates = !!notifyOrderUpdates;
     if (notifyPromotions !== undefined) customer.notifyPromotions = !!notifyPromotions;
     return res.json({ success: true, name: customer.name || null, notifyOrderUpdates: customer.notifyOrderUpdates !== false, notifyPromotions: customer.notifyPromotions !== false });
+  });
+
+  // ===== Notifications (real per-customer targeted notifications, replaces the old
+  // static hardcoded promo banner) =====
+
+  app.get('/api/notifications', async (req, res) => {
+    const customerId = await getSessionCustomerId(req);
+    if (!customerId) return res.status(401).json({ error: 'Please log in.' });
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const result = await pool.query(
+          'SELECT id, type, title, body, order_id, read, created_at FROM notifications WHERE customer_id = $1 ORDER BY created_at DESC LIMIT 30;',
+          [customerId]
+        );
+        return res.json({
+          notifications: result.rows.map(r => ({ id: r.id, type: r.type, title: r.title, body: r.body, orderId: r.order_id || undefined, read: !!r.read, createdAt: r.created_at }))
+        });
+      } catch (err) {
+        console.error('[PostgreSQL] Error fetching notifications, using memory fallback:', err);
+      }
+    }
+    const notifications = memoryDb.notifications
+      .filter(n => n.customerId === customerId)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, 30);
+    return res.json({ notifications });
+  });
+
+  app.post('/api/notifications/:id/read', async (req, res) => {
+    const customerId = await getSessionCustomerId(req);
+    if (!customerId) return res.status(401).json({ error: 'Please log in.' });
+    const { id } = req.params;
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        await pool.query('UPDATE notifications SET read = TRUE WHERE id = $1 AND customer_id = $2;', [id, customerId]);
+        return res.json({ success: true });
+      } catch (err) {
+        console.error('[PostgreSQL] Error marking notification read, using memory fallback:', err);
+      }
+    }
+    const notification = memoryDb.notifications.find(n => n.id === id && n.customerId === customerId);
+    if (notification) notification.read = true;
+    return res.json({ success: true });
+  });
+
+  app.post('/api/notifications/read-all', async (req, res) => {
+    const customerId = await getSessionCustomerId(req);
+    if (!customerId) return res.status(401).json({ error: 'Please log in.' });
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        await pool.query('UPDATE notifications SET read = TRUE WHERE customer_id = $1;', [customerId]);
+        return res.json({ success: true });
+      } catch (err) {
+        console.error('[PostgreSQL] Error marking all notifications read, using memory fallback:', err);
+      }
+    }
+    memoryDb.notifications.filter(n => n.customerId === customerId).forEach(n => { n.read = true; });
+    return res.json({ success: true });
+  });
+
+  // ===== Help & Support (self-contained ticket capture - no live chat/email provider) =====
+
+  app.post('/api/support-messages', async (req, res) => {
+    const customerId = await getSessionCustomerId(req);
+    if (!customerId) return res.status(401).json({ error: 'Please log in.' });
+    const message = String(req.body?.message || '').trim();
+    if (!message) return res.status(400).json({ error: 'Please enter a message.' });
+    const id = randomUUID().replace(/-/g, '').slice(0, 12);
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const customerResult = await pool.query('SELECT phone FROM customers WHERE id = $1;', [customerId]);
+        await pool.query('INSERT INTO support_messages (id, customer_id, phone, message) VALUES ($1, $2, $3, $4);', [id, customerId, customerResult.rows[0]?.phone || null, message.slice(0, 2000)]);
+        return res.json({ success: true });
+      } catch (err) {
+        console.error('[PostgreSQL] Error saving support message, using memory fallback:', err);
+      }
+    }
+    const customer = memoryDb.customers.find(c => c.id === customerId);
+    memoryDb.supportMessages.push({ id, customerId, phone: customer?.phone, message: message.slice(0, 2000), createdAt: new Date().toISOString() });
+    return res.json({ success: true });
   });
 
   // ===== Saved addresses =====
