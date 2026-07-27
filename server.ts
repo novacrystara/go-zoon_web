@@ -610,6 +610,131 @@ async function createNotificationIfEnabled(customerId: string, type: 'order' | '
   memoryDb.notifications.push({ id, customerId, type, title, body, orderId, read: false, createdAt: new Date().toISOString() });
 }
 
+const ORDER_STATUS_LABELS: Record<string, string> = {
+  Preparing: 'is being prepared by the restaurant',
+  ReadyForPickup: 'is ready and awaiting courier pickup',
+  DriverArrived: "your courier has arrived at the restaurant",
+  PickedUp: 'has been picked up by your courier',
+  OutForDelivery: 'is out for delivery',
+  Delivered: 'has been delivered',
+  Cancelled: 'was cancelled'
+};
+
+// Shared with both the PATCH /api/orders/:id handler and the automatic no-rider
+// cancellation path below, so every cancellation source reads consistently.
+function buildOrderNotificationBody(id: string, status: string, cancelReason?: string | null, cancelledBy?: string | null): string {
+  if (status === 'Cancelled') {
+    if (cancelledBy === 'customer') return `Order #${id} was cancelled successfully.`;
+    if (cancelledBy === 'system') return `Order #${id} was cancelled: ${cancelReason || 'No delivery partner available.'}`;
+    if (cancelledBy === 'rider' && cancelReason) return `Order #${id} was cancelled by the courier: ${cancelReason}`;
+    if (cancelReason) return `Order #${id} was cancelled by the restaurant: ${cancelReason}`;
+    return `Order #${id} was cancelled.`;
+  }
+  return `Order #${id} ${ORDER_STATUS_LABELS[status] || 'was updated'}.`;
+}
+
+// Orders sit here, unassigned, while any on-duty rider could still pick them up.
+const OPEN_GIG_STATUSES = ['Placed', 'Preparing', 'ReadyForPickup'];
+
+// How long an order can go unclaimed before the platform gives up on finding a
+// rider and cancels it automatically - configurable so tests can shrink it instead
+// of waiting out the real production window.
+const NO_RIDER_TIMEOUT_MINUTES = Number(process.env.NO_RIDER_TIMEOUT_MINUTES) || 10;
+
+// Cancels an order because no rider is going to deliver it - either every on-duty
+// rider explicitly rejected it, or it sat unclaimed past the timeout below. Shared
+// by both triggers so the customer/restaurant see one consistent cancellation path.
+async function autoCancelOrderNoRider(orderId: string, reason: string): Promise<void> {
+  const cancelledBy = 'system';
+  const pool = getPgPool();
+  if (pool) {
+    try {
+      const result = await pool.query(
+        `UPDATE orders SET status = 'Cancelled', cancel_reason = $1, cancelled_by = $2, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $3 AND status != 'Cancelled' AND status != 'Delivered'
+         RETURNING *;`,
+        [reason, cancelledBy, orderId]
+      );
+      if (result.rows.length > 0) {
+        const order = mapRowToOrder(result.rows[0]);
+        console.log(`[AutoCancel] Order #${orderId} cancelled - ${reason}`);
+        if (order.customerId) {
+          broadcastOrderUpdate(order.customerId, order);
+          createNotificationIfEnabled(order.customerId, 'order', 'Order update', buildOrderNotificationBody(orderId, 'Cancelled', reason, cancelledBy), orderId).catch(() => {});
+        }
+      }
+      return;
+    } catch (err) {
+      console.error('[PostgreSQL] Error auto-cancelling order, falling back to memory:', err);
+    }
+  }
+  const order = memoryDb.orders.find(o => o.id === orderId);
+  if (order && order.status !== 'Cancelled' && order.status !== 'Delivered') {
+    order.status = 'Cancelled';
+    order.cancelReason = reason;
+    order.cancelledBy = cancelledBy;
+    order.updatedAt = new Date().toISOString();
+    console.log(`[AutoCancel] Order #${orderId} cancelled (memory) - ${reason}`);
+    if (order.customerId) {
+      broadcastOrderUpdate(order.customerId, order);
+      createNotificationIfEnabled(order.customerId, 'order', 'Order update', buildOrderNotificationBody(orderId, 'Cancelled', reason, cancelledBy), orderId).catch(() => {});
+    }
+  }
+}
+
+// Reactive trigger: after a rider declines an open gig, check whether every
+// currently on-duty rider has now rejected it - if so, there's nobody left who
+// could pick it up, so cancel rather than leave it silently stuck open forever.
+async function cancelIfAllOnDutyRidersRejected(orderId: string, rejectedByDrivers: string[]): Promise<void> {
+  const pool = getPgPool();
+  let onDutyNames: string[] = [];
+  if (pool) {
+    try {
+      const result = await pool.query('SELECT name FROM drivers WHERE is_on_duty = TRUE;');
+      onDutyNames = result.rows.map(r => r.name);
+    } catch (err) {
+      console.error('[PostgreSQL] Error checking on-duty drivers, using memory fallback:', err);
+      onDutyNames = memoryDb.drivers.filter(d => d.isOnDuty !== false).map(d => d.name);
+    }
+  } else {
+    onDutyNames = memoryDb.drivers.filter(d => d.isOnDuty !== false).map(d => d.name);
+  }
+  if (onDutyNames.length === 0) return; // nothing on duty yet - the timeout sweep handles this case
+  const allRejected = onDutyNames.every(name => rejectedByDrivers.includes(name));
+  if (allRejected) {
+    await autoCancelOrderNoRider(orderId, 'No delivery partner available');
+  }
+}
+
+// Timeout fallback: catches orders nobody ever looked at (zero riders on duty, or
+// an on-duty rider simply never opened the app) - the reactive check above only
+// fires on an explicit reject, so this sweep is the backstop for silence instead.
+async function sweepStaleOpenGigs(): Promise<void> {
+  const cutoff = new Date(Date.now() - NO_RIDER_TIMEOUT_MINUTES * 60000).toISOString();
+  const pool = getPgPool();
+  if (pool) {
+    try {
+      const result = await pool.query(
+        `SELECT id FROM orders WHERE status = ANY($1) AND (driver_name IS NULL OR driver_name = '') AND created_at < $2;`,
+        [OPEN_GIG_STATUSES, cutoff]
+      );
+      for (const row of result.rows) {
+        await autoCancelOrderNoRider(row.id, 'No delivery partner available');
+      }
+      return;
+    } catch (err) {
+      console.error('[PostgreSQL] Error sweeping stale open gigs, using memory fallback:', err);
+    }
+  }
+  const cutoffMs = Date.now() - NO_RIDER_TIMEOUT_MINUTES * 60000;
+  const stale = memoryDb.orders.filter(o =>
+    OPEN_GIG_STATUSES.includes(o.status) && !o.driverName && new Date(o.createdAt).getTime() < cutoffMs
+  );
+  for (const o of stale) {
+    await autoCancelOrderNoRider(o.id, 'No delivery partner available');
+  }
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -625,6 +750,13 @@ async function startServer() {
 
   // Bootstrap Postgres database
   await bootstrapPostgres();
+
+  // Backstop for orders nobody ever picks up - catches the "zero riders on duty"
+  // and "an on-duty rider never opened the app" cases the reactive reject-based
+  // check can't see, since that one only fires on an explicit reject action.
+  setInterval(() => {
+    sweepStaleOpenGigs().catch(err => console.error('[AutoCancel] Error sweeping stale open gigs:', err));
+  }, Number(process.env.SWEEP_INTERVAL_MS) || 60_000);
 
   // API Route: Create/Submit Order (Saves to Postgres, with Fallback to local memory)
   app.post('/api/orders', async (req, res) => {
@@ -776,27 +908,10 @@ async function startServer() {
   app.patch('/api/orders/:id', async (req, res) => {
     const { id } = req.params;
     const { status, driverName, driverPhone, cancelReason, cancelledBy } = req.body;
-    const statusLabels: Record<string, string> = {
-      Preparing: 'is being prepared by the restaurant',
-      ReadyForPickup: 'is ready and awaiting courier pickup',
-      DriverArrived: "your courier has arrived at the restaurant",
-      PickedUp: 'has been picked up by your courier',
-      OutForDelivery: 'is out for delivery',
-      Delivered: 'has been delivered',
-      Cancelled: 'was cancelled'
-    };
     // cancelledBy distinguishes who initiated a cancellation so the customer notification
     // reads correctly - defaults to the restaurant for backward compatibility with the
     // existing Business App "Reject" flow, which never sends this field.
-    const notificationBody = (status: string) => {
-      if (status === 'Cancelled') {
-        if (cancelledBy === 'customer') return `Order #${id} was cancelled successfully.`;
-        if (cancelledBy === 'rider' && cancelReason) return `Order #${id} was cancelled by the courier: ${cancelReason}`;
-        if (cancelReason) return `Order #${id} was cancelled by the restaurant: ${cancelReason}`;
-        return `Order #${id} was cancelled.`;
-      }
-      return `Order #${id} ${statusLabels[status]}.`;
-    };
+    const notificationBody = (status: string) => buildOrderNotificationBody(id, status, cancelReason, cancelledBy);
 
     const pool = getPgPool();
     if (pool) {
@@ -819,7 +934,7 @@ async function startServer() {
           console.log(`[PostgreSQL] Status updated for Order #${id}: ${status}`);
           const order = mapRowToOrder(result.rows[0]);
           if (order.customerId) broadcastOrderUpdate(order.customerId, order);
-          if (order.customerId && status && statusLabels[status]) {
+          if (order.customerId && status && ORDER_STATUS_LABELS[status]) {
             createNotificationIfEnabled(order.customerId, 'order', 'Order update', notificationBody(status), id).catch(() => {});
           }
           return res.json({ success: true, order, source: 'postgres' });
@@ -842,7 +957,7 @@ async function startServer() {
       order.updatedAt = new Date().toISOString();
       console.log(`[MemoryStore] Status updated for Order #${id}: ${status}`);
       if (order.customerId) broadcastOrderUpdate(order.customerId, order);
-      if (order.customerId && status && statusLabels[status]) {
+      if (order.customerId && status && ORDER_STATUS_LABELS[status]) {
         createNotificationIfEnabled(order.customerId, 'order', 'Order update', notificationBody(status), id).catch(() => {});
       }
       return res.json({ success: true, order, source: 'memory' });
@@ -867,6 +982,7 @@ async function startServer() {
         const current: string[] = existing.rows[0].rejected_by_drivers ? JSON.parse(existing.rows[0].rejected_by_drivers) : [];
         const updated = current.includes(driverName) ? current : [...current, driverName];
         const result = await pool.query('UPDATE orders SET rejected_by_drivers = $1 WHERE id = $2 RETURNING *;', [JSON.stringify(updated), id]);
+        cancelIfAllOnDutyRidersRejected(id, updated).catch(err => console.error('[AutoCancel] Error checking all-riders-rejected:', err));
         return res.json({ success: true, order: mapRowToOrder(result.rows[0]), source: 'postgres' });
       } catch (err) {
         console.error('[PostgreSQL] Error rejecting gig, using memory fallback:', err);
@@ -875,6 +991,7 @@ async function startServer() {
     const order = memoryDb.orders.find(o => o.id === id);
     if (!order) return res.status(444).json({ error: 'Order not found in memory database.' });
     order.rejectedByDrivers = order.rejectedByDrivers?.includes(driverName) ? order.rejectedByDrivers : [...(order.rejectedByDrivers || []), driverName];
+    cancelIfAllOnDutyRidersRejected(id, order.rejectedByDrivers).catch(err => console.error('[AutoCancel] Error checking all-riders-rejected:', err));
     return res.json({ success: true, order, source: 'memory' });
   });
 
