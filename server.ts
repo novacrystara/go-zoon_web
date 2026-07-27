@@ -9,7 +9,7 @@ import { getDatabase as getAdminDatabase, Database } from 'firebase-admin/databa
 import dotenv from 'dotenv';
 import { randomUUID, randomBytes, scryptSync, timingSafeEqual } from 'crypto';
 import { UK_RESTAURANTS, validateUKPostcode } from './src/data/restaurants';
-import type { Restaurant, MenuItem } from './src/types';
+import type { Restaurant, MenuItem, Driver } from './src/types';
 
 dotenv.config();
 
@@ -20,6 +20,15 @@ const DEMO_PHONE_NUMBERS = ['+447700900000', '+447700900001'];
 const DEMO_OTP = '123456';
 const normalizePhone = (phone: string) => (phone || '').replace(/[\s()-]/g, '');
 
+// Matches the client-side default fleet in App.tsx and the Postgres first-run seed -
+// keeping the same names/phones across all three means duty-status persistence and
+// driver-name order matching stay in sync no matter which backend is active.
+const DEFAULT_DRIVERS: Driver[] = [
+  { name: 'Dave Henderson', phone: '+44 7700 900077', vehicle: 'Bicycle', isOnDuty: true },
+  { name: 'Sarah Jenkins', phone: '+44 7700 911044', vehicle: 'Electric Scooter', isOnDuty: true },
+  { name: 'Liam Fitzpatrick', phone: '+44 7700 900222', vehicle: 'Electric Scooter', isOnDuty: true },
+];
+
 // In-memory fallbacks for development/testing sandbox when real databases aren't configured yet
 const memoryDb = {
   orders: [] as any[],
@@ -29,7 +38,9 @@ const memoryDb = {
   restaurants: JSON.parse(JSON.stringify(UK_RESTAURANTS)) as Restaurant[],
   closedRestaurants: [] as string[],
   outOfStockItems: [] as string[],
-  drivers: [] as { name: string; phone: string; vehicle: string }[],
+  // Pre-seeded with the default fleet for the same reason: onboarding a new rider
+  // should merge into this list instead of the catalog appearing to replace it.
+  drivers: JSON.parse(JSON.stringify(DEFAULT_DRIVERS)) as Driver[],
   customers: [] as { id: string; phone: string; name?: string | null; notifyOrderUpdates?: boolean; notifyPromotions?: boolean; mpinHash?: string | null }[],
   sessions: {} as Record<string, string>, // token -> customerId
   addresses: [] as any[],
@@ -241,7 +252,9 @@ function mapRowToOrder(row: any): any {
     driverPhone: row.driver_phone || undefined,
     rated: !!row.rated,
     preparingStartedAt: row.preparing_started_at || undefined,
+    deliveredAt: row.delivered_at || undefined,
     cancelReason: row.cancel_reason || undefined,
+    rejectedByDrivers: row.rejected_by_drivers ? JSON.parse(row.rejected_by_drivers) : undefined,
     createdAt: row.created_at || new Date().toISOString()
   };
 }
@@ -361,7 +374,8 @@ async function bootstrapPostgres() {
         id SERIAL PRIMARY KEY,
         name VARCHAR(100) NOT NULL,
         phone VARCHAR(50) NOT NULL,
-        vehicle VARCHAR(50) NOT NULL
+        vehicle VARCHAR(50) NOT NULL,
+        is_on_duty BOOLEAN NOT NULL DEFAULT TRUE
       );
       CREATE TABLE IF NOT EXISTS client_errors (
         id SERIAL PRIMARY KEY,
@@ -415,6 +429,9 @@ async function bootstrapPostgres() {
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_method VARCHAR(20) DEFAULT 'Card';
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS preparing_started_at TIMESTAMP WITH TIME ZONE;
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancel_reason TEXT;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP WITH TIME ZONE;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS rejected_by_drivers TEXT;
+      ALTER TABLE drivers ADD COLUMN IF NOT EXISTS is_on_duty BOOLEAN NOT NULL DEFAULT TRUE;
     `);
 
     await client.query(`
@@ -454,15 +471,10 @@ async function bootstrapPostgres() {
 
     const { rows: existingDrivers } = await client.query('SELECT COUNT(*) FROM drivers;');
     if (Number(existingDrivers[0].count) === 0) {
-      const defaultDrivers = [
-        { name: 'Dave Henderson', phone: '+44 7700 900077', vehicle: 'Bicycle' },
-        { name: 'Sarah Jenkins', phone: '+44 7700 911044', vehicle: 'Electric Scooter' },
-        { name: 'Liam Fitzpatrick', phone: '+44 7700 900222', vehicle: 'Electric Scooter' }
-      ];
-      for (const driver of defaultDrivers) {
-        await client.query('INSERT INTO drivers (name, phone, vehicle) VALUES ($1, $2, $3);', [driver.name, driver.phone, driver.vehicle]);
+      for (const driver of DEFAULT_DRIVERS) {
+        await client.query('INSERT INTO drivers (name, phone, vehicle, is_on_duty) VALUES ($1, $2, $3, TRUE);', [driver.name, driver.phone, driver.vehicle]);
       }
-      console.log(`[PostgreSQL] Seeded ${defaultDrivers.length} default drivers.`);
+      console.log(`[PostgreSQL] Seeded ${DEFAULT_DRIVERS.length} default drivers.`);
     }
 
     client.release();
@@ -786,6 +798,7 @@ async function startServer() {
               driver_phone = COALESCE($3, driver_phone),
               cancel_reason = COALESCE($4, cancel_reason),
               preparing_started_at = CASE WHEN $1 = 'Preparing' THEN CURRENT_TIMESTAMP ELSE preparing_started_at END,
+              delivered_at = CASE WHEN $1 = 'Delivered' THEN CURRENT_TIMESTAMP ELSE delivered_at END,
               updated_at = CURRENT_TIMESTAMP
           WHERE id = $5
           RETURNING *;
@@ -813,6 +826,7 @@ async function startServer() {
       if (driverPhone !== undefined) order.driverPhone = driverPhone;
       if (cancelReason !== undefined) order.cancelReason = cancelReason;
       if (status === 'Preparing' && !order.preparingStartedAt) order.preparingStartedAt = new Date().toISOString();
+      if (status === 'Delivered' && !order.deliveredAt) order.deliveredAt = new Date().toISOString();
       order.updatedAt = new Date().toISOString();
       console.log(`[MemoryStore] Status updated for Order #${id}: ${status}`);
       if (order.customerId) broadcastOrderUpdate(order.customerId, order);
@@ -823,6 +837,33 @@ async function startServer() {
     }
 
     return res.status(444).json({ error: 'Order not found in memory database.' });
+  });
+
+  // API Route: A Road King rider declines an open gig - keeps it out of that
+  // specific rider's Open Gigs list without removing it from the pool for others.
+  app.post('/api/orders/:id/reject-gig', async (req, res) => {
+    const { id } = req.params;
+    const { driverName } = req.body;
+    if (!driverName) {
+      return res.status(400).json({ error: 'Missing driverName.' });
+    }
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const existing = await pool.query('SELECT rejected_by_drivers FROM orders WHERE id = $1;', [id]);
+        if (existing.rows.length === 0) return res.status(404).json({ error: 'Order not found.' });
+        const current: string[] = existing.rows[0].rejected_by_drivers ? JSON.parse(existing.rows[0].rejected_by_drivers) : [];
+        const updated = current.includes(driverName) ? current : [...current, driverName];
+        const result = await pool.query('UPDATE orders SET rejected_by_drivers = $1 WHERE id = $2 RETURNING *;', [JSON.stringify(updated), id]);
+        return res.json({ success: true, order: mapRowToOrder(result.rows[0]), source: 'postgres' });
+      } catch (err) {
+        console.error('[PostgreSQL] Error rejecting gig, using memory fallback:', err);
+      }
+    }
+    const order = memoryDb.orders.find(o => o.id === id);
+    if (!order) return res.status(444).json({ error: 'Order not found in memory database.' });
+    order.rejectedByDrivers = order.rejectedByDrivers?.includes(driverName) ? order.rejectedByDrivers : [...(order.rejectedByDrivers || []), driverName];
+    return res.json({ success: true, order, source: 'memory' });
   });
 
   // API Route: Fetch Orders. A valid session scopes results to that customer only
@@ -1208,7 +1249,7 @@ async function startServer() {
     const pool = getPgPool();
     if (pool) {
       try {
-        const result = await pool.query('SELECT name, phone, vehicle FROM drivers ORDER BY id ASC;');
+        const result = await pool.query('SELECT name, phone, vehicle, is_on_duty AS "isOnDuty" FROM drivers ORDER BY id ASC;');
         return res.json({ drivers: result.rows, source: 'postgres' });
       } catch (err) {
         console.error('[PostgreSQL] Error fetching drivers, using memory fallback:', err);
@@ -1231,8 +1272,36 @@ async function startServer() {
         console.error('[PostgreSQL] Error onboarding driver, using memory fallback:', err);
       }
     }
-    memoryDb.drivers = [...memoryDb.drivers, { name, phone, vehicle }];
+    memoryDb.drivers = [...memoryDb.drivers, { name, phone, vehicle, isOnDuty: true }];
     return res.json({ success: true, source: 'memory' });
+  });
+
+  // API Route: Toggle a rider's duty status (Go Online / Go Offline) - persisted
+  // server-side so it survives a refresh instead of living only in local UI state.
+  app.patch('/api/drivers/:phone/duty', async (req, res) => {
+    const { phone } = req.params;
+    const { isOnDuty } = req.body;
+    if (typeof isOnDuty !== 'boolean') {
+      return res.status(400).json({ error: 'Missing/invalid isOnDuty boolean.' });
+    }
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const result = await pool.query(
+          'UPDATE drivers SET is_on_duty = $1 WHERE phone = $2 RETURNING name, phone, vehicle, is_on_duty AS "isOnDuty";',
+          [isOnDuty, phone]
+        );
+        if (result.rows.length > 0) {
+          return res.json({ success: true, driver: result.rows[0], source: 'postgres' });
+        }
+      } catch (err) {
+        console.error('[PostgreSQL] Error updating driver duty status, using memory fallback:', err);
+      }
+    }
+    const driver = memoryDb.drivers.find(d => d.phone === phone);
+    if (!driver) return res.status(404).json({ error: 'Driver not found.' });
+    driver.isOnDuty = isOnDuty;
+    return res.json({ success: true, driver, source: 'memory' });
   });
 
   // API Route: Lightweight client-side error logging (no third-party crash reporting

@@ -5,7 +5,7 @@ import GoZoonRoadKing from './components/apps/GoZoonRoadKing';
 import GoZoonAdmin from './components/apps/GoZoonAdmin';
 
 import { UK_RESTAURANTS, UK_POSTCODES, validateUKPostcode } from './data/restaurants';
-import { Restaurant, CartItem, Order, UKPostcodeZone, OrderStatus, MenuItem } from './types';
+import { Restaurant, CartItem, Order, UKPostcodeZone, OrderStatus, MenuItem, Driver } from './types';
 import { Smartphone, Store, Bike, Landmark, Info, Sparkles, Server, ShieldCheck, CreditCard, Activity, Wifi, Battery, Settings } from 'lucide-react';
 import { getApiUrl, fetchApi, getStoredSession, setStoredSession, clearStoredSession, StoredSession } from './api';
 import { Capacitor } from '@capacitor/core';
@@ -90,12 +90,12 @@ export default function App(): React.JSX.Element {
     return UK_RESTAURANTS;
   });
 
-  const [drivers, setDrivers] = useState<{ name: string; phone: string; vehicle: string }[]>(() => {
+  const [drivers, setDrivers] = useState<Driver[]>(() => {
     const saved = localStorage.getItem('gozoon_drivers');
     return saved ? JSON.parse(saved) : [
-      { name: 'Dave Henderson', phone: '+44 7700 900077', vehicle: 'Bicycle' },
-      { name: 'Sarah Jenkins', phone: '+44 7700 911044', vehicle: 'Electric Scooter' },
-      { name: 'Liam Fitzpatrick', phone: '+44 7700 900222', vehicle: 'Electric Scooter' }
+      { name: 'Dave Henderson', phone: '+44 7700 900077', vehicle: 'Bicycle', isOnDuty: true },
+      { name: 'Sarah Jenkins', phone: '+44 7700 911044', vehicle: 'Electric Scooter', isOnDuty: true },
+      { name: 'Liam Fitzpatrick', phone: '+44 7700 900222', vehicle: 'Electric Scooter', isOnDuty: true }
     ];
   });
 
@@ -435,12 +435,46 @@ export default function App(): React.JSX.Element {
   };
 
   const handleOnboardDriver = (newDriver: { name: string; phone: string; vehicle: string }) => {
-    setDrivers(prev => [...prev, newDriver]);
+    setDrivers(prev => [...prev, { ...newDriver, isOnDuty: true }]);
     fetchApi('/api/drivers', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newDriver)
     }).catch(err => console.error('[Drivers] Failed to persist onboarded driver:', err));
+  };
+
+  // Go Online / Go Offline - persisted server-side so duty status survives a
+  // refresh instead of living only in local UI state.
+  const handleToggleDriverDuty = (phone: string, isOnDuty: boolean) => {
+    setDrivers(prev => prev.map(d => d.phone === phone ? { ...d, isOnDuty } : d));
+    fetchApi(`/api/drivers/${encodeURIComponent(phone)}/duty`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isOnDuty })
+    }).catch(err => console.error('[Drivers] Failed to persist duty status:', err));
+  };
+
+  // A Road King rider declines an open gig - keeps it out of that rider's own
+  // Open Gigs list without removing it from the pool for other riders.
+  const handleRejectGig = (orderId: string, driverName: string) => {
+    setOrders(prev => prev.map(o => o.id === orderId
+      ? { ...o, rejectedByDrivers: o.rejectedByDrivers?.includes(driverName) ? o.rejectedByDrivers : [...(o.rejectedByDrivers || []), driverName] }
+      : o
+    ));
+    addPlatformLog(`GIG_REJECTED: Courier ${driverName} declined the gig for order #${orderId}`, 'info');
+
+    fetchApi(`/api/orders/${orderId}/reject-gig`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ driverName })
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.order) {
+          setOrders(prev => prev.map(o => o.id === orderId ? data.order : o));
+        }
+      })
+      .catch(err => console.error('[Orders] Failed to reject gig:', err));
   };
 
   const handleAddToCart = (newItem: CartItem) => {
@@ -717,6 +751,8 @@ export default function App(): React.JSX.Element {
             drivers={drivers}
             onOnboardDriver={handleOnboardDriver}
             onAssignDriver={handleAssignDriver}
+            onToggleDriverDuty={handleToggleDriverDuty}
+            onRejectGig={handleRejectGig}
             onAddLog={addPlatformLog}
           />
         )}
@@ -1165,6 +1201,8 @@ export default function App(): React.JSX.Element {
                       drivers={drivers}
                       onOnboardDriver={handleOnboardDriver}
                       onAssignDriver={handleAssignDriver}
+                      onToggleDriverDuty={handleToggleDriverDuty}
+                      onRejectGig={handleRejectGig}
                       onAddLog={addPlatformLog}
                     />
                   )}

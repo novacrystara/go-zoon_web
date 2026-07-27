@@ -123,8 +123,17 @@ export interface Order {
   driverLatLng?: { lat: number; lng: number };
   rated?: boolean;
   preparingStartedAt?: string; // set when the kitchen accepts the ticket - drives the prep countdown
+  deliveredAt?: string; // set when the courier marks the order Delivered - drives real per-day/week/month earnings aggregation
   cancelReason?: string;
+  rejectedByDrivers?: string[]; // driver names who declined this gig - keeps it out of their Open Gigs list without blocking other riders
   createdAt: string;
+}
+
+export interface Driver {
+  name: string;
+  phone: string;
+  vehicle: string;
+  isOnDuty?: boolean;
 }
 
 export interface UKPostcodeZone {

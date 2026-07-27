@@ -1,18 +1,33 @@
 import React, { useState, useEffect } from 'react';
-import { Bike, Check, Play, AlertCircle, MapPin, Map, Navigation, DollarSign, Plus, Phone, Compass, ArrowRight, Eye, RefreshCw } from 'lucide-react';
-import { Order, OrderStatus } from '../../types';
+import { Bike, Check, Play, AlertCircle, MapPin, Map, Navigation, DollarSign, Plus, Phone, Compass, ArrowRight, Eye, RefreshCw, X, CalendarDays, CalendarRange } from 'lucide-react';
+import { Order, OrderStatus, Driver } from '../../types';
 
 interface GoZoonRoadKingProps {
   orders: Order[];
   onUpdateOrderStatus: (orderId: string, status: OrderStatus, driverName?: string, driverPhone?: string) => void;
-  drivers: { name: string; phone: string; vehicle: string }[];
+  drivers: Driver[];
   onOnboardDriver: (driver: { name: string; phone: string; vehicle: string }) => void;
   onAssignDriver: (orderId: string, driverName: string, driverPhone: string) => void;
+  onToggleDriverDuty: (phone: string, isOnDuty: boolean) => void;
+  onRejectGig: (orderId: string, driverName: string) => void;
   onAddLog: (event: string, type: 'info' | 'success' | 'warning') => void;
 }
 
 const ACTIVE_JOB_STATUSES: OrderStatus[] = ['Placed', 'Preparing', 'ReadyForPickup', 'DriverArrived', 'PickedUp', 'OutForDelivery'];
 const OPEN_GIG_STATUSES: OrderStatus[] = ['Placed', 'Preparing', 'ReadyForPickup'];
+
+// Flat standard payout per delivery, on top of the real customer tip - matches the
+// business's documented rider rate card (not itself a bug the audit flagged; only
+// the aggregation and tip-sourcing around it were).
+const BASE_DELIVERY_RATE = 4.85;
+
+function orderPayout(order: Order): number {
+  return BASE_DELIVERY_RATE + (order.tip || 0);
+}
+
+function isSameUKDay(a: Date, b: Date): boolean {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
 
 export default function GoZoonRoadKing({
   orders,
@@ -20,14 +35,15 @@ export default function GoZoonRoadKing({
   drivers,
   onOnboardDriver,
   onAssignDriver,
+  onToggleDriverDuty,
+  onRejectGig,
   onAddLog
 }: GoZoonRoadKingProps): React.JSX.Element {
   const [selectedDriverName, setSelectedDriverName] = useState<string>(drivers[0]?.name || 'Dave Henderson');
-  const [isOnDuty, setIsOnDuty] = useState(true);
   const [activeTab, setActiveTab] = useState<'jobs' | 'onboard' | 'wallet'>('jobs');
 
   // Wallet and cash-out state
-  const [walletBalance, setWalletBalance] = useState(38.60);
+  const [walletBalance, setWalletBalance] = useState(0);
   const [cashoutSuccess, setCashoutSuccess] = useState(false);
 
   // Rider onboarding state
@@ -41,6 +57,8 @@ export default function GoZoonRoadKing({
   const [simulationProgress, setSimulationProgress] = useState(0);
 
   const selectedDriver = drivers.find(d => d.name === selectedDriverName) || drivers[0];
+  // Undefined (e.g. a legacy driver record fetched before this field existed) counts as online.
+  const isOnDuty = selectedDriver?.isOnDuty !== false;
 
   // Retrieve active job for this rider - any order assigned to them that hasn't
   // reached a terminal state yet, from acceptance all the way through delivery.
@@ -49,21 +67,46 @@ export default function GoZoonRoadKing({
     ACTIVE_JOB_STATUSES.includes(o.status)
   );
 
-  // Available jobs: no courier assigned yet, anywhere from just-placed through food-ready.
+  // Available jobs: no courier assigned yet, anywhere from just-placed through food-ready,
+  // and not previously declined by this specific rider.
   const openGigs = orders.filter(o =>
     (!o.driverName || o.driverName === '') &&
-    OPEN_GIG_STATUSES.includes(o.status)
+    OPEN_GIG_STATUSES.includes(o.status) &&
+    !o.rejectedByDrivers?.includes(selectedDriver?.name || '')
   );
 
   // Filter completed jobs for this driver
   const driverJobHistory = orders.filter(o => o.driverName === selectedDriver?.name && o.status === 'Delivered');
 
-  // Sync wallet balance based on completed deliveries
+  const now = new Date();
+  const todayJobs = driverJobHistory.filter(o => isSameUKDay(new Date(o.deliveredAt || o.createdAt), now));
+  const weekJobs = driverJobHistory.filter(o => (now.getTime() - new Date(o.deliveredAt || o.createdAt).getTime()) <= 7 * 24 * 60 * 60 * 1000);
+  const monthJobs = driverJobHistory.filter(o => {
+    const d = new Date(o.deliveredAt || o.createdAt);
+    return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+  });
+  const sumPayouts = (list: Order[]) => list.reduce((sum, o) => sum + orderPayout(o), 0);
+  const sumTips = (list: Order[]) => list.reduce((sum, o) => sum + (o.tip || 0), 0);
+  const todayEarnings = sumPayouts(todayJobs);
+  const weekEarnings = sumPayouts(weekJobs);
+  const monthEarnings = sumPayouts(monthJobs);
+  const todayTips = sumTips(todayJobs);
+
+  // Sync wallet balance (all-time real earnings) based on completed deliveries
   useEffect(() => {
-    // Each delivery is £4.85 base + £2.50 tip = £7.35
-    const computedEarnings = 38.60 + (driverJobHistory.length * 7.35);
-    setWalletBalance(computedEarnings);
-  }, [driverJobHistory.length]);
+    setWalletBalance(sumPayouts(driverJobHistory));
+  }, [driverJobHistory.length, driverJobHistory.map(o => o.id).join(',')]);
+
+  const handleToggleDuty = () => {
+    if (!selectedDriver) return;
+    onToggleDriverDuty(selectedDriver.phone, !isOnDuty);
+  };
+
+  const handleRejectGigClick = (orderId: string) => {
+    if (!selectedDriver) return;
+    onRejectGig(orderId, selectedDriver.name);
+    onAddLog(`GIG_REJECTED: Courier ${selectedDriver.name} declined job for order #${orderId}`, 'warning');
+  };
 
   // Handle accepting an open gig - assigns the courier as a distinct action, without
   // forcing or skipping the kitchen's own Placed -> Preparing -> ReadyForPickup progress.
@@ -142,7 +185,7 @@ export default function GoZoonRoadKing({
           </div>
 
           <button
-            onClick={() => setIsOnDuty(!isOnDuty)}
+            onClick={handleToggleDuty}
             className={`px-3 py-1 rounded-full text-[10px] font-extrabold cursor-pointer transition-all ${
               isOnDuty 
                 ? 'bg-orange-950 text-orange-400 border border-orange-800 animate-pulse' 
@@ -243,7 +286,7 @@ export default function GoZoonRoadKing({
                   {/* Gig earnings breakout */}
                   <div className="bg-stone-900/60 p-2.5 border border-stone-800 rounded-lg text-[11px] font-semibold flex justify-between">
                     <span>Expected Payout:</span>
-                    <span className="text-orange-500 font-black">£7.35 (£4.85 standard + £2.50 tip)</span>
+                    <span className="text-orange-500 font-black">£{orderPayout(activeJob).toFixed(2)} (£{BASE_DELIVERY_RATE.toFixed(2)} standard + £{(activeJob.tip || 0).toFixed(2)} tip)</span>
                   </div>
 
                   {/* ACTIONS */}
@@ -363,16 +406,25 @@ export default function GoZoonRoadKing({
 
                       <div className="grid grid-cols-2 gap-2 text-[10px] bg-stone-900 p-2 rounded-md">
                         <div className="text-stone-400">Est. Distance: <b className="text-stone-200 block text-xs mt-0.5">1.4 miles</b></div>
-                        <div className="text-stone-400">Total Payout: <b className="text-orange-500 block text-xs mt-0.5">£7.35</b></div>
+                        <div className="text-stone-400">Total Payout: <b className="text-orange-500 block text-xs mt-0.5">£{orderPayout(order).toFixed(2)}</b></div>
                       </div>
 
-                      <button
-                        onClick={() => handleAcceptGig(order.id)}
-                        className="w-full h-8 bg-orange-500 hover:bg-orange-600 text-white font-extrabold text-xs rounded-lg flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-                      >
-                        <span>Accept Delivery Gig</span>
-                        <ArrowRight className="w-3.5 h-3.5" />
-                      </button>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => handleRejectGigClick(order.id)}
+                          className="h-8 px-3 border border-stone-700 hover:bg-stone-800 text-stone-400 font-extrabold text-xs rounded-lg flex items-center justify-center gap-1 transition-colors cursor-pointer"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                          <span>Reject</span>
+                        </button>
+                        <button
+                          onClick={() => handleAcceptGig(order.id)}
+                          className="flex-1 h-8 bg-orange-500 hover:bg-orange-600 text-white font-extrabold text-xs rounded-lg flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <span>Accept Delivery Gig</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
                   ))
                 )}
@@ -390,7 +442,7 @@ export default function GoZoonRoadKing({
                     <div key={order.id} className="flex justify-between items-center p-2 bg-stone-950 border border-stone-850 rounded-lg text-xs">
                       <span className="font-bold text-stone-300">Order #{order.id} ({order.deliveryPostcode})</span>
                       <span className="text-emerald-500 font-bold bg-emerald-950 px-2 py-0.5 rounded-full text-[9px] border border-emerald-900">
-                        +£7.35 Earned
+                        +£{orderPayout(order).toFixed(2)} Earned
                       </span>
                     </div>
                   ))}
@@ -404,13 +456,39 @@ export default function GoZoonRoadKing({
         {/* TAB 2: COURIER WALLET & INSTANT CASH OUT */}
         {activeTab === 'wallet' && (
           <div className="space-y-4">
-            
+
             <div className="bg-stone-950 border border-stone-850 p-5 rounded-2xl text-center space-y-2.5">
               <span className="text-[10px] font-bold text-stone-500 uppercase tracking-widest block">Available Cash Balance</span>
               <div className="text-3xl font-black text-orange-500">£{walletBalance.toFixed(2)}</div>
               <p className="text-[10px] text-stone-400 max-w-[200px] mx-auto leading-relaxed">
-                Earned across {driverJobHistory.length} standard deliveries today. Standard rate is £4.85 base plus 100% of the £2.50 customer tip.
+                Earned across {driverJobHistory.length} completed deliveries. Standard rate is £{BASE_DELIVERY_RATE.toFixed(2)} base plus 100% of the customer's actual tip.
               </p>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              <div className="bg-stone-950 border border-stone-850 p-3 rounded-xl text-center space-y-1">
+                <Compass className="w-3.5 h-3.5 text-orange-500 mx-auto" />
+                <span className="text-[8px] font-bold text-stone-500 uppercase tracking-wider block">Today</span>
+                <div className="text-sm font-black text-stone-100">£{todayEarnings.toFixed(2)}</div>
+                <span className="text-[8px] text-stone-500">{todayJobs.length} run{todayJobs.length === 1 ? '' : 's'}</span>
+              </div>
+              <div className="bg-stone-950 border border-stone-850 p-3 rounded-xl text-center space-y-1">
+                <CalendarDays className="w-3.5 h-3.5 text-orange-500 mx-auto" />
+                <span className="text-[8px] font-bold text-stone-500 uppercase tracking-wider block">This Week</span>
+                <div className="text-sm font-black text-stone-100">£{weekEarnings.toFixed(2)}</div>
+                <span className="text-[8px] text-stone-500">{weekJobs.length} run{weekJobs.length === 1 ? '' : 's'}</span>
+              </div>
+              <div className="bg-stone-950 border border-stone-850 p-3 rounded-xl text-center space-y-1">
+                <CalendarRange className="w-3.5 h-3.5 text-orange-500 mx-auto" />
+                <span className="text-[8px] font-bold text-stone-500 uppercase tracking-wider block">This Month</span>
+                <div className="text-sm font-black text-stone-100">£{monthEarnings.toFixed(2)}</div>
+                <span className="text-[8px] text-stone-500">{monthJobs.length} run{monthJobs.length === 1 ? '' : 's'}</span>
+              </div>
+            </div>
+
+            <div className="bg-stone-900/60 p-2.5 border border-stone-800 rounded-lg text-[11px] font-semibold flex justify-between items-center">
+              <span className="text-stone-400">Tips Earned Today:</span>
+              <span className="text-orange-500 font-black">£{todayTips.toFixed(2)}</span>
             </div>
 
             {cashoutSuccess && (
