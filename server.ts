@@ -24,7 +24,9 @@ const normalizePhone = (phone: string) => (phone || '').replace(/[\s()-]/g, '');
 const memoryDb = {
   orders: [] as any[],
   telemetry: {} as Record<string, { orderId: string, driverName: string, lat: number, lng: number, updatedAt: string }>,
-  restaurants: [] as Restaurant[],
+  // Pre-seeded with a deep copy of the static demo restaurants so onboarding a new
+  // restaurant merges into this list instead of the catalog appearing to replace them.
+  restaurants: JSON.parse(JSON.stringify(UK_RESTAURANTS)) as Restaurant[],
   closedRestaurants: [] as string[],
   outOfStockItems: [] as string[],
   drivers: [] as { name: string; phone: string; vehicle: string }[],
@@ -483,7 +485,7 @@ async function getRestaurantCatalog(): Promise<Restaurant[]> {
       console.error('[PostgreSQL] Failed to fetch restaurant catalog, using memory/static fallback:', err);
     }
   }
-  return memoryDb.restaurants.length > 0 ? memoryDb.restaurants : UK_RESTAURANTS;
+  return memoryDb.restaurants;
 }
 
 // Resolves the authenticated customerId from a session token, never trusting a
@@ -1726,13 +1728,9 @@ async function startServer() {
         console.error('[PostgreSQL] Error toggling min-order enforcement, using memory fallback:', err);
       }
     }
-    // memoryDb.restaurants only gets populated by onboarding a new restaurant -
-    // getRestaurantCatalog() otherwise serves the UK_RESTAURANTS array directly
-    // (by reference), so mutating that same object is what makes the toggle
-    // actually stick for subsequent catalog fetches in memory-fallback mode.
-    // Deliberately NOT pushed into memoryDb.restaurants: once that array is
-    // non-empty, getRestaurantCatalog() switches to serving *only* it, which
-    // would truncate the catalog down to just this one restaurant.
+    // memoryDb.restaurants is pre-seeded with a deep copy of UK_RESTAURANTS, so it's
+    // always the single source of truth in memory-fallback mode; mutating the found
+    // object here is what makes the toggle stick for subsequent catalog fetches.
     const restaurant = memoryDb.restaurants.find(r => r.id === id) || UK_RESTAURANTS.find(r => r.id === id);
     if (!restaurant) return res.status(404).json({ error: 'Restaurant not found.' });
     restaurant.enforceMinOrder = !restaurant.enforceMinOrder;
