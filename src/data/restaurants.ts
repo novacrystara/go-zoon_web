@@ -507,3 +507,13 @@ export function getStoreClosureReason(restaurant: Restaurant, now: Date = new Da
   }
   return null;
 }
+
+// Admin Portal gate for the customer-facing catalog - a restaurant awaiting
+// approval, rejected, suspended, or deactivated by the platform should never
+// appear to customers, regardless of its own open/closed toggle. Missing fields
+// are treated as approved/active so pre-existing seeded restaurants keep showing.
+export function isRestaurantVisibleToCustomers(restaurant: Restaurant): boolean {
+  if (restaurant.approvalStatus === 'pending' || restaurant.approvalStatus === 'rejected') return false;
+  if (restaurant.adminStatus === 'suspended' || restaurant.adminStatus === 'deactivated') return false;
+  return true;
+}

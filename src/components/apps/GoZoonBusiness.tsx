@@ -365,6 +365,33 @@ export default function GoZoonBusiness({
           </div>
         )}
 
+        {/* Admin Portal controls override anything the merchant does themselves - these
+            banners make Approve/Reject/Suspend/Deactivate visibly consequential here. */}
+        {activeMerchant?.approvalStatus === 'pending' && (
+          <div className="bg-amber-950/50 border border-amber-800 text-amber-400 text-[10px] font-bold px-2.5 py-1.5 rounded-lg flex items-center gap-1.5">
+            <AlertCircle className="w-3 h-3 flex-shrink-0" />
+            <span>Pending Go-Zoon approval - this restaurant won't appear to customers yet.</span>
+          </div>
+        )}
+        {activeMerchant?.approvalStatus === 'rejected' && (
+          <div className="bg-red-950/50 border border-red-800 text-red-400 text-[10px] font-bold px-2.5 py-1.5 rounded-lg flex items-center gap-1.5">
+            <AlertCircle className="w-3 h-3 flex-shrink-0" />
+            <span>Go-Zoon did not approve this restaurant's listing.</span>
+          </div>
+        )}
+        {activeMerchant?.adminStatus === 'suspended' && (
+          <div className="bg-red-950/50 border border-red-800 text-red-400 text-[10px] font-bold px-2.5 py-1.5 rounded-lg flex items-center gap-1.5">
+            <AlertCircle className="w-3 h-3 flex-shrink-0" />
+            <span>Suspended by Go-Zoon - orders are paused until this is lifted.</span>
+          </div>
+        )}
+        {activeMerchant?.adminStatus === 'deactivated' && (
+          <div className="bg-red-950/50 border border-red-800 text-red-400 text-[10px] font-bold px-2.5 py-1.5 rounded-lg flex items-center gap-1.5">
+            <AlertCircle className="w-3 h-3 flex-shrink-0" />
+            <span>Deactivated by Go-Zoon - this restaurant is no longer operating on the platform.</span>
+          </div>
+        )}
+
         {/* Dropdown rest selector to test multiple restaurant experiences */}
         <div>
           <label className="block text-[8px] font-bold text-slate-500 uppercase tracking-wider mb-1">Selected Kitchen Profile</label>

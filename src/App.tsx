@@ -408,12 +408,56 @@ export default function App(): React.JSX.Element {
   };
 
   const handleOnboardRestaurant = (newRestaurant: Restaurant) => {
-    setRestaurantsList(prev => [newRestaurant, ...prev]);
+    // Newly onboarded restaurants require Admin Portal approval before they're
+    // visible to customers - mirrors the default the server assigns on save.
+    setRestaurantsList(prev => [{ ...newRestaurant, approvalStatus: 'pending', verified: false, adminStatus: 'active' }, ...prev]);
     fetchApi('/api/restaurants', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newRestaurant)
     }).catch(err => console.error('[Restaurants] Failed to persist onboarded restaurant:', err));
+  };
+
+  // Admin Portal: Restaurant Management (Approve / Verify / Suspend / Deactivate / Edit)
+  const handleSetRestaurantApproval = (id: string, approvalStatus: 'pending' | 'approved' | 'rejected') => {
+    setRestaurantsList(prev => prev.map(r => r.id === id ? { ...r, approvalStatus } : r));
+    const restName = restaurantsList.find(r => r.id === id)?.name || 'Merchant';
+    addPlatformLog(`ADMIN_RESTAURANT_APPROVAL: "${restName}" set to ${approvalStatus}`, 'warning');
+    fetchApi(`/api/restaurants/${id}/approval`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approvalStatus })
+    }).catch(err => console.error('[Restaurants] Failed to sync approval status:', err));
+  };
+
+  const handleSetRestaurantVerified = (id: string, verified: boolean) => {
+    setRestaurantsList(prev => prev.map(r => r.id === id ? { ...r, verified } : r));
+    fetchApi(`/api/restaurants/${id}/verify`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ verified })
+    }).catch(err => console.error('[Restaurants] Failed to sync verified flag:', err));
+  };
+
+  const handleSetRestaurantAdminStatus = (id: string, adminStatus: 'active' | 'suspended' | 'deactivated') => {
+    setRestaurantsList(prev => prev.map(r => r.id === id ? { ...r, adminStatus } : r));
+    const restName = restaurantsList.find(r => r.id === id)?.name || 'Merchant';
+    addPlatformLog(`ADMIN_RESTAURANT_STATUS: "${restName}" set to ${adminStatus}`, 'warning');
+    fetchApi(`/api/restaurants/${id}/admin-status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adminStatus })
+    }).catch(err => console.error('[Restaurants] Failed to sync admin status:', err));
+  };
+
+  const handleEditRestaurant = (id: string, updates: Partial<Restaurant>) => {
+    setRestaurantsList(prev => prev.map(r => r.id === id ? { ...r, ...updates } : r));
+    addPlatformLog(`ADMIN_RESTAURANT_EDIT: Updated listing details for restaurant #${id}`, 'info');
+    fetchApi(`/api/restaurants/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates)
+    }).catch(err => console.error('[Restaurants] Failed to save restaurant edits:', err));
   };
 
   const handleAddDishToRestaurant = (restaurantId: string, menuItem: MenuItem) => {
@@ -435,7 +479,9 @@ export default function App(): React.JSX.Element {
   };
 
   const handleOnboardDriver = (newDriver: { name: string; phone: string; vehicle: string }) => {
-    setDrivers(prev => [...prev, { ...newDriver, isOnDuty: true }]);
+    // Newly registered riders start off-duty and pending Admin Portal approval -
+    // mirrors the default the server assigns on save.
+    setDrivers(prev => [...prev, { ...newDriver, isOnDuty: false, approvalStatus: 'pending' }]);
     fetchApi('/api/drivers', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -452,6 +498,29 @@ export default function App(): React.JSX.Element {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ isOnDuty })
     }).catch(err => console.error('[Drivers] Failed to persist duty status:', err));
+  };
+
+  // Admin Portal: Delivery Partner Management (Approve / Suspend)
+  const handleSetDriverApproval = (phone: string, approvalStatus: 'pending' | 'approved' | 'rejected') => {
+    setDrivers(prev => prev.map(d => d.phone === phone ? { ...d, approvalStatus } : d));
+    const driverName = drivers.find(d => d.phone === phone)?.name || 'Rider';
+    addPlatformLog(`ADMIN_DRIVER_APPROVAL: "${driverName}" set to ${approvalStatus}`, 'warning');
+    fetchApi(`/api/drivers/${encodeURIComponent(phone)}/approval`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approvalStatus })
+    }).catch(err => console.error('[Drivers] Failed to sync approval status:', err));
+  };
+
+  const handleSetDriverSuspended = (phone: string, adminSuspended: boolean) => {
+    setDrivers(prev => prev.map(d => d.phone === phone ? { ...d, adminSuspended, isOnDuty: adminSuspended ? false : d.isOnDuty } : d));
+    const driverName = drivers.find(d => d.phone === phone)?.name || 'Rider';
+    addPlatformLog(`ADMIN_DRIVER_SUSPEND: "${driverName}" ${adminSuspended ? 'suspended' : 'reinstated'}`, 'warning');
+    fetchApi(`/api/drivers/${encodeURIComponent(phone)}/suspend`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adminSuspended })
+    }).catch(err => console.error('[Drivers] Failed to sync suspension:', err));
   };
 
   // A Road King rider declines an open gig - keeps it out of that rider's own
@@ -618,7 +687,14 @@ export default function App(): React.JSX.Element {
     addPlatformLog(`GIG_CANCELLED: Courier ${driverName} cancelled the accepted gig for order #${orderId}.`, 'warning');
   };
 
-  const handleUpdateOrderStatus = (orderId: string, status: OrderStatus, customDriverName?: string, customDriverPhone?: string, cancelReason?: string, cancelledBy?: 'restaurant' | 'rider' | 'customer') => {
+  // Admin Portal: Order Management "Cancellation" - a platform operator can cancel
+  // any individual order directly, distinct from the sandbox-only bulk "Flush All Orders".
+  const handleAdminCancelOrder = (orderId: string) => {
+    handleUpdateOrderStatus(orderId, 'Cancelled', undefined, undefined, 'Cancelled by platform admin', 'admin');
+    addPlatformLog(`ADMIN_ORDER_CANCELLED: Platform admin cancelled order #${orderId}.`, 'warning');
+  };
+
+  const handleUpdateOrderStatus = (orderId: string, status: OrderStatus, customDriverName?: string, customDriverPhone?: string, cancelReason?: string, cancelledBy?: 'restaurant' | 'rider' | 'customer' | 'admin') => {
     const existingOrder = orders.find(o => o.id === orderId);
     const driverName = customDriverName !== undefined ? customDriverName : existingOrder?.driverName;
     const driverPhone = customDriverPhone !== undefined ? customDriverPhone : existingOrder?.driverPhone;
@@ -777,6 +853,13 @@ export default function App(): React.JSX.Element {
               platformLogs={platformLogs}
               onClearLogs={handleClearLogs}
               onClearAllOrders={handleClearAllOrders}
+              onSetRestaurantApproval={handleSetRestaurantApproval}
+              onSetRestaurantVerified={handleSetRestaurantVerified}
+              onSetRestaurantAdminStatus={handleSetRestaurantAdminStatus}
+              onEditRestaurant={handleEditRestaurant}
+              onSetDriverApproval={handleSetDriverApproval}
+              onSetDriverSuspended={handleSetDriverSuspended}
+              onCancelOrder={handleAdminCancelOrder}
             />
           </div>
         )}
@@ -1119,6 +1202,13 @@ export default function App(): React.JSX.Element {
                 platformLogs={platformLogs}
                 onClearLogs={handleClearLogs}
                 onClearAllOrders={handleClearAllOrders}
+                onSetRestaurantApproval={handleSetRestaurantApproval}
+                onSetRestaurantVerified={handleSetRestaurantVerified}
+                onSetRestaurantAdminStatus={handleSetRestaurantAdminStatus}
+                onEditRestaurant={handleEditRestaurant}
+                onSetDriverApproval={handleSetDriverApproval}
+                onSetDriverSuspended={handleSetDriverSuspended}
+                onCancelOrder={handleAdminCancelOrder}
               />
             </div>
           ) : (

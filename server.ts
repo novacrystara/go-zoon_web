@@ -9,7 +9,7 @@ import { getDatabase as getAdminDatabase, Database } from 'firebase-admin/databa
 import dotenv from 'dotenv';
 import { randomUUID, randomBytes, scryptSync, timingSafeEqual } from 'crypto';
 import { UK_RESTAURANTS, validateUKPostcode } from './src/data/restaurants';
-import type { Restaurant, MenuItem, Driver } from './src/types';
+import type { Restaurant, MenuItem, Driver, PromoCode } from './src/types';
 
 dotenv.config();
 
@@ -47,7 +47,7 @@ const memoryDb = {
   reviews: [] as any[],
   notifications: [] as any[],
   supportMessages: [] as any[],
-  promoCodes: { CHIPPY10: 10 } as Record<string, number>,
+  promoCodes: [{ code: 'CHIPPY10', discountPercent: 10, active: true }] as PromoCode[],
 };
 
 // MPIN hashing - scrypt (Node built-in, no extra dependency) with a random salt per
@@ -376,7 +376,9 @@ async function bootstrapPostgres() {
         name VARCHAR(100) NOT NULL,
         phone VARCHAR(50) NOT NULL,
         vehicle VARCHAR(50) NOT NULL,
-        is_on_duty BOOLEAN NOT NULL DEFAULT TRUE
+        is_on_duty BOOLEAN NOT NULL DEFAULT TRUE,
+        approval_status VARCHAR(20) NOT NULL DEFAULT 'approved',
+        admin_suspended BOOLEAN NOT NULL DEFAULT FALSE
       );
       CREATE TABLE IF NOT EXISTS client_errors (
         id SERIAL PRIMARY KEY,
@@ -434,6 +436,8 @@ async function bootstrapPostgres() {
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS rejected_by_drivers TEXT;
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancelled_by VARCHAR(20);
       ALTER TABLE drivers ADD COLUMN IF NOT EXISTS is_on_duty BOOLEAN NOT NULL DEFAULT TRUE;
+      ALTER TABLE drivers ADD COLUMN IF NOT EXISTS approval_status VARCHAR(20) NOT NULL DEFAULT 'approved';
+      ALTER TABLE drivers ADD COLUMN IF NOT EXISTS admin_suspended BOOLEAN NOT NULL DEFAULT FALSE;
     `);
 
     await client.query(`
@@ -537,8 +541,8 @@ async function getPromoDiscount(code: string | undefined): Promise<{ code: strin
       console.error('[PostgreSQL] Failed to validate promo code, using memory fallback:', err);
     }
   }
-  const discountPercent = memoryDb.promoCodes[normalized];
-  return discountPercent ? { code: normalized, discountPercent } : null;
+  const promo = memoryDb.promoCodes.find(p => p.code === normalized && p.active);
+  return promo ? { code: normalized, discountPercent: promo.discountPercent } : null;
 }
 
 // Live-order-update fanout: connected SSE clients get pushed to instantly (this
@@ -626,6 +630,7 @@ function buildOrderNotificationBody(id: string, status: string, cancelReason?: s
   if (status === 'Cancelled') {
     if (cancelledBy === 'customer') return `Order #${id} was cancelled successfully.`;
     if (cancelledBy === 'system') return `Order #${id} was cancelled: ${cancelReason || 'No delivery partner available.'}`;
+    if (cancelledBy === 'admin') return `Order #${id} was cancelled by Go-Zoon support.`;
     if (cancelledBy === 'rider' && cancelReason) return `Order #${id} was cancelled by the courier: ${cancelReason}`;
     if (cancelReason) return `Order #${id} was cancelled by the restaurant: ${cancelReason}`;
     return `Order #${id} was cancelled.`;
@@ -1020,6 +1025,85 @@ async function startServer() {
     return res.json({ orders: memoryOrders, source: 'memory' });
   });
 
+  // API Route: Real platform finance summary (Admin Portal Dashboard + Finance tab).
+  // GMV/commission are summed from each order's own persisted subtotal/service_fee -
+  // the actual server-computed figures from checkout - rather than re-derived
+  // client-side from raw order data, and only count orders that actually completed.
+  app.get('/api/admin/finance-summary', async (req, res) => {
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const totals = await pool.query(`
+          SELECT
+            COALESCE(SUM(subtotal) FILTER (WHERE status = 'Delivered'), 0) AS gmv,
+            COALESCE(SUM(service_fee) FILTER (WHERE status = 'Delivered'), 0) AS commission,
+            COUNT(*) FILTER (WHERE status = 'Delivered') AS delivered_orders,
+            COUNT(*) FILTER (WHERE status = 'Cancelled') AS cancelled_orders,
+            COUNT(*) AS total_orders
+          FROM orders;
+        `);
+        const byDayResult = await pool.query(`
+          SELECT DATE(delivered_at) AS day,
+                 SUM(subtotal) AS gmv,
+                 SUM(service_fee) AS commission,
+                 COUNT(*) AS orders
+          FROM orders
+          WHERE status = 'Delivered' AND delivered_at >= NOW() - INTERVAL '14 days'
+          GROUP BY DATE(delivered_at)
+          ORDER BY day DESC;
+        `);
+        const row = totals.rows[0];
+        const deliveredOrders = Number(row.delivered_orders);
+        const gmv = Number(row.gmv);
+        return res.json({
+          gmv,
+          commission: Number(row.commission),
+          aov: deliveredOrders > 0 ? gmv / deliveredOrders : 0,
+          deliveredOrders,
+          cancelledOrders: Number(row.cancelled_orders),
+          totalOrders: Number(row.total_orders),
+          byDay: byDayResult.rows.map(r => ({
+            date: r.day instanceof Date ? r.day.toISOString().slice(0, 10) : r.day,
+            gmv: Number(r.gmv),
+            commission: Number(r.commission),
+            orders: Number(r.orders)
+          })),
+          source: 'postgres'
+        });
+      } catch (err) {
+        console.error('[PostgreSQL] Error computing finance summary, using memory fallback:', err);
+      }
+    }
+    const delivered = memoryDb.orders.filter((o: any) => o.status === 'Delivered');
+    const gmv = delivered.reduce((sum: number, o: any) => sum + (o.subtotal || 0), 0);
+    const commission = delivered.reduce((sum: number, o: any) => sum + (o.serviceFee || 0), 0);
+    const byDayMap = new Map<string, { gmv: number; commission: number; orders: number }>();
+    const fourteenDaysAgo = Date.now() - 14 * 24 * 60 * 60 * 1000;
+    for (const o of delivered) {
+      const deliveredAtMs = new Date(o.deliveredAt || o.createdAt).getTime();
+      if (deliveredAtMs < fourteenDaysAgo) continue;
+      const day = new Date(o.deliveredAt || o.createdAt).toISOString().slice(0, 10);
+      const entry = byDayMap.get(day) || { gmv: 0, commission: 0, orders: 0 };
+      entry.gmv += o.subtotal || 0;
+      entry.commission += o.serviceFee || 0;
+      entry.orders += 1;
+      byDayMap.set(day, entry);
+    }
+    const byDay = Array.from(byDayMap.entries())
+      .map(([date, v]) => ({ date, ...v }))
+      .sort((a, b) => b.date.localeCompare(a.date));
+    return res.json({
+      gmv,
+      commission,
+      aov: delivered.length > 0 ? gmv / delivered.length : 0,
+      deliveredOrders: delivered.length,
+      cancelledOrders: memoryDb.orders.filter((o: any) => o.status === 'Cancelled').length,
+      totalOrders: memoryDb.orders.length,
+      byDay,
+      source: 'memory'
+    });
+  });
+
   // API Route: Delete all orders (Flush database).
   // Destructive and unauthenticated by design (sandbox reset button) - disabled outside
   // of local/dev usage so it can't be called against the live production deployment.
@@ -1151,6 +1235,12 @@ async function startServer() {
     if (!restaurant?.id || !restaurant?.name) {
       return res.status(400).json({ error: 'Missing restaurant id/name.' });
     }
+    // Newly onboarded restaurants require Admin Portal approval before they're
+    // visible to customers - pre-existing seeded restaurants are grandfathered
+    // in as approved since they never had this field set.
+    restaurant.approvalStatus = 'pending';
+    restaurant.verified = false;
+    restaurant.adminStatus = 'active';
     const pool = getPgPool();
     if (pool) {
       try {
@@ -1321,6 +1411,114 @@ async function startServer() {
     return res.json({ success: true, restaurant, source: 'memory' });
   });
 
+  // ===== Admin Portal: Restaurant Management (Approve / Verify / Suspend / Deactivate / Edit) =====
+  // Distinct from the merchant's own self-service toggles above - these are
+  // platform-operator controls that override what the merchant can do themselves.
+
+  const ADMIN_RESTAURANT_EDIT_FIELDS = ['name', 'cuisine', 'deliveryFee', 'minOrder', 'postcode', 'discountOffer', 'offersFreeDelivery'] as const;
+
+  app.patch('/api/restaurants/:id', async (req, res) => {
+    const { id } = req.params;
+    const updates: Partial<Restaurant> = {};
+    for (const field of ADMIN_RESTAURANT_EDIT_FIELDS) {
+      if (req.body[field] !== undefined) (updates as any)[field] = req.body[field];
+    }
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'No editable fields provided.' });
+    }
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const result = await pool.query('SELECT data FROM restaurants WHERE id = $1;', [id]);
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Restaurant not found.' });
+        const restaurant = Object.assign(result.rows[0].data as Restaurant, updates);
+        await pool.query('UPDATE restaurants SET data = $1 WHERE id = $2;', [JSON.stringify(restaurant), id]);
+        return res.json({ success: true, restaurant, source: 'postgres' });
+      } catch (err) {
+        console.error('[PostgreSQL] Error editing restaurant, using memory fallback:', err);
+      }
+    }
+    const restaurant = memoryDb.restaurants.find(r => r.id === id) || UK_RESTAURANTS.find(r => r.id === id);
+    if (!restaurant) return res.status(404).json({ error: 'Restaurant not found.' });
+    Object.assign(restaurant, updates);
+    return res.json({ success: true, restaurant, source: 'memory' });
+  });
+
+  app.patch('/api/restaurants/:id/approval', async (req, res) => {
+    const { id } = req.params;
+    const { approvalStatus } = req.body;
+    if (!['pending', 'approved', 'rejected'].includes(approvalStatus)) {
+      return res.status(400).json({ error: 'approvalStatus must be pending, approved, or rejected.' });
+    }
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const result = await pool.query('SELECT data FROM restaurants WHERE id = $1;', [id]);
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Restaurant not found.' });
+        const restaurant = result.rows[0].data as Restaurant;
+        restaurant.approvalStatus = approvalStatus;
+        await pool.query('UPDATE restaurants SET data = $1 WHERE id = $2;', [JSON.stringify(restaurant), id]);
+        return res.json({ success: true, restaurant, source: 'postgres' });
+      } catch (err) {
+        console.error('[PostgreSQL] Error setting approval status, using memory fallback:', err);
+      }
+    }
+    const restaurant = memoryDb.restaurants.find(r => r.id === id) || UK_RESTAURANTS.find(r => r.id === id);
+    if (!restaurant) return res.status(404).json({ error: 'Restaurant not found.' });
+    restaurant.approvalStatus = approvalStatus;
+    return res.json({ success: true, restaurant, source: 'memory' });
+  });
+
+  app.patch('/api/restaurants/:id/verify', async (req, res) => {
+    const { id } = req.params;
+    const { verified } = req.body;
+    if (typeof verified !== 'boolean') {
+      return res.status(400).json({ error: 'Missing/invalid verified boolean.' });
+    }
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const result = await pool.query('SELECT data FROM restaurants WHERE id = $1;', [id]);
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Restaurant not found.' });
+        const restaurant = result.rows[0].data as Restaurant;
+        restaurant.verified = verified;
+        await pool.query('UPDATE restaurants SET data = $1 WHERE id = $2;', [JSON.stringify(restaurant), id]);
+        return res.json({ success: true, restaurant, source: 'postgres' });
+      } catch (err) {
+        console.error('[PostgreSQL] Error setting verified flag, using memory fallback:', err);
+      }
+    }
+    const restaurant = memoryDb.restaurants.find(r => r.id === id) || UK_RESTAURANTS.find(r => r.id === id);
+    if (!restaurant) return res.status(404).json({ error: 'Restaurant not found.' });
+    restaurant.verified = verified;
+    return res.json({ success: true, restaurant, source: 'memory' });
+  });
+
+  app.patch('/api/restaurants/:id/admin-status', async (req, res) => {
+    const { id } = req.params;
+    const { adminStatus } = req.body;
+    if (!['active', 'suspended', 'deactivated'].includes(adminStatus)) {
+      return res.status(400).json({ error: 'adminStatus must be active, suspended, or deactivated.' });
+    }
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const result = await pool.query('SELECT data FROM restaurants WHERE id = $1;', [id]);
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Restaurant not found.' });
+        const restaurant = result.rows[0].data as Restaurant;
+        restaurant.adminStatus = adminStatus;
+        await pool.query('UPDATE restaurants SET data = $1 WHERE id = $2;', [JSON.stringify(restaurant), id]);
+        return res.json({ success: true, restaurant, source: 'postgres' });
+      } catch (err) {
+        console.error('[PostgreSQL] Error setting admin status, using memory fallback:', err);
+      }
+    }
+    const restaurant = memoryDb.restaurants.find(r => r.id === id) || UK_RESTAURANTS.find(r => r.id === id);
+    if (!restaurant) return res.status(404).json({ error: 'Restaurant not found.' });
+    restaurant.adminStatus = adminStatus;
+    return res.json({ success: true, restaurant, source: 'memory' });
+  });
+
   // API Route: Real average rating + review count computed from actual reviews
   // (Business App Reports) - falls back to the restaurant's static seeded rating
   // when it has no reviews yet, so a brand-new listing doesn't show a blank 0.
@@ -1378,7 +1576,7 @@ async function startServer() {
     const pool = getPgPool();
     if (pool) {
       try {
-        const result = await pool.query('SELECT name, phone, vehicle, is_on_duty AS "isOnDuty" FROM drivers ORDER BY id ASC;');
+        const result = await pool.query('SELECT name, phone, vehicle, is_on_duty AS "isOnDuty", approval_status AS "approvalStatus", admin_suspended AS "adminSuspended" FROM drivers ORDER BY id ASC;');
         return res.json({ drivers: result.rows, source: 'postgres' });
       } catch (err) {
         console.error('[PostgreSQL] Error fetching drivers, using memory fallback:', err);
@@ -1392,16 +1590,18 @@ async function startServer() {
     if (!name || !phone || !vehicle) {
       return res.status(400).json({ error: 'Missing driver name/phone/vehicle.' });
     }
+    // Newly registered riders start off-duty and pending Admin Portal approval -
+    // the pre-existing default fleet is grandfathered in as approved and online.
     const pool = getPgPool();
     if (pool) {
       try {
-        await pool.query('INSERT INTO drivers (name, phone, vehicle) VALUES ($1, $2, $3);', [name, phone, vehicle]);
+        await pool.query("INSERT INTO drivers (name, phone, vehicle, is_on_duty, approval_status) VALUES ($1, $2, $3, FALSE, 'pending');", [name, phone, vehicle]);
         return res.json({ success: true, source: 'postgres' });
       } catch (err) {
         console.error('[PostgreSQL] Error onboarding driver, using memory fallback:', err);
       }
     }
-    memoryDb.drivers = [...memoryDb.drivers, { name, phone, vehicle, isOnDuty: true }];
+    memoryDb.drivers = [...memoryDb.drivers, { name, phone, vehicle, isOnDuty: false, approvalStatus: 'pending' }];
     return res.json({ success: true, source: 'memory' });
   });
 
@@ -1417,7 +1617,7 @@ async function startServer() {
     if (pool) {
       try {
         const result = await pool.query(
-          'UPDATE drivers SET is_on_duty = $1 WHERE phone = $2 RETURNING name, phone, vehicle, is_on_duty AS "isOnDuty";',
+          'UPDATE drivers SET is_on_duty = $1 WHERE phone = $2 RETURNING name, phone, vehicle, is_on_duty AS "isOnDuty", approval_status AS "approvalStatus", admin_suspended AS "adminSuspended";',
           [isOnDuty, phone]
         );
         if (result.rows.length > 0) {
@@ -1431,6 +1631,143 @@ async function startServer() {
     if (!driver) return res.status(404).json({ error: 'Driver not found.' });
     driver.isOnDuty = isOnDuty;
     return res.json({ success: true, driver, source: 'memory' });
+  });
+
+  // ===== Admin Portal: Delivery Partner Management (Approve / Suspend) =====
+
+  app.patch('/api/drivers/:phone/approval', async (req, res) => {
+    const { phone } = req.params;
+    const { approvalStatus } = req.body;
+    if (!['pending', 'approved', 'rejected'].includes(approvalStatus)) {
+      return res.status(400).json({ error: 'approvalStatus must be pending, approved, or rejected.' });
+    }
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const result = await pool.query(
+          'UPDATE drivers SET approval_status = $1 WHERE phone = $2 RETURNING name, phone, vehicle, is_on_duty AS "isOnDuty", approval_status AS "approvalStatus", admin_suspended AS "adminSuspended";',
+          [approvalStatus, phone]
+        );
+        if (result.rows.length > 0) {
+          return res.json({ success: true, driver: result.rows[0], source: 'postgres' });
+        }
+      } catch (err) {
+        console.error('[PostgreSQL] Error updating driver approval status, using memory fallback:', err);
+      }
+    }
+    const driver = memoryDb.drivers.find(d => d.phone === phone);
+    if (!driver) return res.status(404).json({ error: 'Driver not found.' });
+    driver.approvalStatus = approvalStatus;
+    return res.json({ success: true, driver, source: 'memory' });
+  });
+
+  app.patch('/api/drivers/:phone/suspend', async (req, res) => {
+    const { phone } = req.params;
+    const { adminSuspended } = req.body;
+    if (typeof adminSuspended !== 'boolean') {
+      return res.status(400).json({ error: 'Missing/invalid adminSuspended boolean.' });
+    }
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        // Suspending also forces the rider off duty immediately - there's no point
+        // suspending someone who stays visibly online and able to accept gigs.
+        const result = await pool.query(
+          `UPDATE drivers SET admin_suspended = $1, is_on_duty = CASE WHEN $1 THEN FALSE ELSE is_on_duty END
+           WHERE phone = $2 RETURNING name, phone, vehicle, is_on_duty AS "isOnDuty", approval_status AS "approvalStatus", admin_suspended AS "adminSuspended";`,
+          [adminSuspended, phone]
+        );
+        if (result.rows.length > 0) {
+          return res.json({ success: true, driver: result.rows[0], source: 'postgres' });
+        }
+      } catch (err) {
+        console.error('[PostgreSQL] Error updating driver suspension, using memory fallback:', err);
+      }
+    }
+    const driver = memoryDb.drivers.find(d => d.phone === phone);
+    if (!driver) return res.status(404).json({ error: 'Driver not found.' });
+    driver.adminSuspended = adminSuspended;
+    if (adminSuspended) driver.isOnDuty = false;
+    return res.json({ success: true, driver, source: 'memory' });
+  });
+
+  // ===== Admin Portal: Promotions (Coupons) =====
+  // The promo_codes table/validation already existed for checkout - these are the
+  // first endpoints that actually let anyone manage codes instead of only seeding one.
+
+  app.get('/api/promo-codes', async (req, res) => {
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const result = await pool.query('SELECT code, discount_percent AS "discountPercent", active FROM promo_codes ORDER BY code ASC;');
+        return res.json({ promoCodes: result.rows, source: 'postgres' });
+      } catch (err) {
+        console.error('[PostgreSQL] Error fetching promo codes, using memory fallback:', err);
+      }
+    }
+    return res.json({ promoCodes: memoryDb.promoCodes, source: 'memory' });
+  });
+
+  app.post('/api/promo-codes', async (req, res) => {
+    const code = String(req.body?.code || '').trim().toUpperCase();
+    const discountPercent = Number(req.body?.discountPercent);
+    if (!code || !Number.isFinite(discountPercent) || discountPercent <= 0 || discountPercent > 100) {
+      return res.status(400).json({ error: 'code and a discountPercent between 1-100 are required.' });
+    }
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        await pool.query(
+          'INSERT INTO promo_codes (code, discount_percent, active) VALUES ($1, $2, TRUE) ON CONFLICT (code) DO UPDATE SET discount_percent = EXCLUDED.discount_percent, active = TRUE;',
+          [code, discountPercent]
+        );
+        return res.json({ success: true, source: 'postgres' });
+      } catch (err) {
+        console.error('[PostgreSQL] Error creating promo code, using memory fallback:', err);
+      }
+    }
+    memoryDb.promoCodes = [{ code, discountPercent, active: true }, ...memoryDb.promoCodes.filter(p => p.code !== code)];
+    return res.json({ success: true, source: 'memory' });
+  });
+
+  app.patch('/api/promo-codes/:code', async (req, res) => {
+    const code = req.params.code.toUpperCase();
+    const { active, discountPercent } = req.body;
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const result = await pool.query(
+          `UPDATE promo_codes SET active = COALESCE($1, active), discount_percent = COALESCE($2, discount_percent)
+           WHERE code = $3 RETURNING code, discount_percent AS "discountPercent", active;`,
+          [typeof active === 'boolean' ? active : null, Number.isFinite(discountPercent) ? discountPercent : null, code]
+        );
+        if (result.rows.length > 0) {
+          return res.json({ success: true, promoCode: result.rows[0], source: 'postgres' });
+        }
+      } catch (err) {
+        console.error('[PostgreSQL] Error updating promo code, using memory fallback:', err);
+      }
+    }
+    const promo = memoryDb.promoCodes.find(p => p.code === code);
+    if (!promo) return res.status(404).json({ error: 'Promo code not found.' });
+    if (typeof active === 'boolean') promo.active = active;
+    if (Number.isFinite(discountPercent)) promo.discountPercent = discountPercent;
+    return res.json({ success: true, promoCode: promo, source: 'memory' });
+  });
+
+  app.delete('/api/promo-codes/:code', async (req, res) => {
+    const code = req.params.code.toUpperCase();
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        await pool.query('DELETE FROM promo_codes WHERE code = $1;', [code]);
+        return res.json({ success: true, source: 'postgres' });
+      } catch (err) {
+        console.error('[PostgreSQL] Error deleting promo code, using memory fallback:', err);
+      }
+    }
+    memoryDb.promoCodes = memoryDb.promoCodes.filter(p => p.code !== code);
+    return res.json({ success: true, source: 'memory' });
   });
 
   // API Route: Lightweight client-side error logging (no third-party crash reporting

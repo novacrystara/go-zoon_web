@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Search, MapPin, ShoppingBag, Clock, Tag, Award, Check, ChevronLeft, ChevronDown, Star, Phone, HelpCircle, Navigation, ShieldAlert, CreditCard, ClipboardList, History, User, LogOut, Plus, Bike, Store, Trash2, Leaf, SlidersHorizontal, Info, Bell, MessageSquare, Flame, TrendingUp, Banknote, Download, FileText, LifeBuoy, KeyRound, X } from 'lucide-react';
 import { Restaurant, CartItem, Order, UKPostcodeZone, MenuItem, OrderStatus, CartCustomization, SavedAddress, Review, AppNotification } from '../../types';
-import { validateUKPostcode, haversineDistanceKm, NEARBY_RADIUS_KM, getStoreClosureReason } from '../../data/restaurants';
+import { validateUKPostcode, haversineDistanceKm, NEARBY_RADIUS_KM, getStoreClosureReason, isRestaurantVisibleToCustomers } from '../../data/restaurants';
 import LegalModal from '../LegalModal';
 import PhoneLogin from '../PhoneLogin';
 import { fetchApi, StoredSession } from '../../api';
@@ -790,11 +790,16 @@ export default function GoZoonCustomer({
   // server.ts). Not added on top of the total: UK menu prices are treated as VAT-inclusive.
   const vatIncluded = cartSubtotal > 0 ? Math.round((cartSubtotal - discountAmount) * 0.2 * 100) / 100 : 0;
 
+  // Admin Portal gate: a restaurant awaiting approval, rejected, suspended, or
+  // deactivated should never appear in customer-facing discovery, regardless of
+  // its own open/closed toggle.
+  const visibleRestaurants = useMemo(() => restaurantsList.filter(isRestaurantVisibleToCustomers), [restaurantsList]);
+
   // Filters over every restaurant's full menu (.some() + .toLowerCase() per item) -
   // memoized so background polling re-renders and unrelated state changes (e.g.
   // typing in the cart's promo code field) don't force this to recompute from
   // scratch, which was showing up as scroll/navigation jank.
-  const filteredRestaurants = useMemo(() => restaurantsList.filter(restaurant => {
+  const filteredRestaurants = useMemo(() => visibleRestaurants.filter(restaurant => {
     const q = searchQuery.trim().toLowerCase();
     const matchesSearch = q === '' ||
       restaurant.name.toLowerCase().includes(q) ||
@@ -835,7 +840,7 @@ export default function GoZoonCustomer({
     }
 
     return matchesSearch && matchesFilter && matchesHeroCategory;
-  }), [restaurantsList, searchQuery, activeFilter, selectedCategoryHero, currentPostcode]);
+  }), [visibleRestaurants, searchQuery, activeFilter, selectedCategoryHero, currentPostcode]);
 
   // Average menu item price used as a "Price" sort proxy - restaurants don't carry
   // a single price point of their own, only per-dish prices.
@@ -856,16 +861,16 @@ export default function GoZoonCustomer({
   }, [filteredRestaurants, sortBy, currentPostcode]);
 
   const showDiscoverySections = !searchQuery.trim() && !selectedCategoryHero && activeFilter === 'All';
-  const featuredRestaurants = restaurantsList.filter(r => r.featured);
+  const featuredRestaurants = visibleRestaurants.filter(r => r.featured);
 
   // "Popular Near You" - the most-reviewed restaurants within actual delivery
   // distance of the selected postcode, distinct from the curated Featured flag.
   const popularNearYou = useMemo(() => {
-    return restaurantsList
+    return visibleRestaurants
       .filter(r => haversineDistanceKm(currentPostcode, r) <= NEARBY_RADIUS_KM)
       .sort((a, b) => b.reviewsCount - a.reviewsCount)
       .slice(0, 5);
-  }, [restaurantsList, currentPostcode]);
+  }, [visibleRestaurants, currentPostcode]);
   // "Recently Ordered" surfaces the actual dishes from order history (matching how
   // items appear in My Orders History), deduped by menu item - not by restaurantId -
   // so multiple different dishes from the same restaurant each get their own card.
@@ -873,7 +878,7 @@ export default function GoZoonCustomer({
     const seen = new Set<string>();
     const list: { item: CartItem; restaurant: Restaurant }[] = [];
     for (const order of orders) {
-      const rest = restaurantsList.find(r => r.id === order.restaurantId);
+      const rest = visibleRestaurants.find(r => r.id === order.restaurantId);
       if (!rest) continue;
       for (const item of order.items) {
         if (seen.has(item.menuItem.id)) continue;
@@ -884,7 +889,7 @@ export default function GoZoonCustomer({
       if (list.length >= 8) break;
     }
     return list;
-  }, [orders, restaurantsList]);
+  }, [orders, visibleRestaurants]);
 
   // Restaurant page: menu filtered by in-menu search, category, and veg-only, then
   // grouped by category so items render in labeled sections instead of one flat list.

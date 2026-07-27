@@ -69,7 +69,20 @@ export interface Restaurant {
   // Store management: a short manual pause (ISO timestamp) distinct from the
   // merchant's open/closed toggle - auto-expires once this time passes.
   pausedUntil?: string;
+  // Platform admin controls (Admin Portal), distinct from the merchant's own
+  // self-service toggles above. Missing/undefined is treated as the default
+  // "approved"/"active" state so pre-existing seeded restaurants keep working -
+  // only newly onboarded restaurants start out explicitly 'pending'.
+  approvalStatus?: 'pending' | 'approved' | 'rejected';
+  verified?: boolean;
+  adminStatus?: 'active' | 'suspended' | 'deactivated';
   menu: MenuItem[];
+}
+
+export interface PromoCode {
+  code: string;
+  discountPercent: number;
+  active: boolean;
 }
 
 export interface CartCustomization {
@@ -125,7 +138,7 @@ export interface Order {
   preparingStartedAt?: string; // set when the kitchen accepts the ticket - drives the prep countdown
   deliveredAt?: string; // set when the courier marks the order Delivered - drives real per-day/week/month earnings aggregation
   cancelReason?: string;
-  cancelledBy?: 'restaurant' | 'rider' | 'customer' | 'system'; // who/what initiated a Cancelled status - 'system' means the platform auto-cancelled it (e.g. no rider available) - drives the wording of the cancellation notification
+  cancelledBy?: 'restaurant' | 'rider' | 'customer' | 'system' | 'admin'; // who/what initiated a Cancelled status - 'system' means the platform auto-cancelled it (e.g. no rider available), 'admin' means a human platform operator did - drives the wording of the cancellation notification
   rejectedByDrivers?: string[]; // driver names who declined this gig - keeps it out of their Open Gigs list without blocking other riders
   createdAt: string;
 }
@@ -135,6 +148,11 @@ export interface Driver {
   phone: string;
   vehicle: string;
   isOnDuty?: boolean;
+  // Platform admin controls (Admin Portal). Missing/undefined approvalStatus is
+  // treated as 'approved' so the pre-existing default fleet keeps working -
+  // only newly registered riders start out explicitly 'pending'.
+  approvalStatus?: 'pending' | 'approved' | 'rejected';
+  adminSuspended?: boolean;
 }
 
 export interface UKPostcodeZone {

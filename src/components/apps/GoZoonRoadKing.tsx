@@ -59,8 +59,14 @@ export default function GoZoonRoadKing({
   const [simulationProgress, setSimulationProgress] = useState(0);
 
   const selectedDriver = drivers.find(d => d.name === selectedDriverName) || drivers[0];
+  // Admin Portal controls override the rider's own duty toggle - a suspended or
+  // not-yet-approved rider can't go online no matter what they tap.
+  const isAdminSuspended = selectedDriver?.adminSuspended === true;
+  const isPendingApproval = selectedDriver?.approvalStatus === 'pending';
+  const isRejectedByAdmin = selectedDriver?.approvalStatus === 'rejected';
+  const canGoOnDuty = !isAdminSuspended && !isPendingApproval && !isRejectedByAdmin;
   // Undefined (e.g. a legacy driver record fetched before this field existed) counts as online.
-  const isOnDuty = selectedDriver?.isOnDuty !== false;
+  const isOnDuty = canGoOnDuty && selectedDriver?.isOnDuty !== false;
 
   // Retrieve active job for this rider - any order assigned to them that hasn't
   // reached a terminal state yet, from acceptance all the way through delivery.
@@ -100,7 +106,7 @@ export default function GoZoonRoadKing({
   }, [driverJobHistory.length, driverJobHistory.map(o => o.id).join(',')]);
 
   const handleToggleDuty = () => {
-    if (!selectedDriver) return;
+    if (!selectedDriver || !canGoOnDuty) return;
     onToggleDriverDuty(selectedDriver.phone, !isOnDuty);
   };
 
@@ -196,13 +202,16 @@ export default function GoZoonRoadKing({
 
           <button
             onClick={handleToggleDuty}
-            className={`px-3 py-1 rounded-full text-[10px] font-extrabold cursor-pointer transition-all ${
-              isOnDuty 
-                ? 'bg-orange-950 text-orange-400 border border-orange-800 animate-pulse' 
-                : 'bg-stone-800 text-stone-500 border border-stone-700'
+            disabled={!canGoOnDuty}
+            className={`px-3 py-1 rounded-full text-[10px] font-extrabold transition-all ${
+              !canGoOnDuty
+                ? 'bg-stone-900 text-stone-600 border border-stone-800 cursor-not-allowed'
+                : isOnDuty
+                ? 'bg-orange-950 text-orange-400 border border-orange-800 animate-pulse cursor-pointer'
+                : 'bg-stone-800 text-stone-500 border border-stone-700 cursor-pointer'
             }`}
           >
-            ● {isOnDuty ? 'DUTY ONLINE' : 'DUTY OFFLINE'}
+            ● {isAdminSuspended ? 'SUSPENDED' : isPendingApproval ? 'PENDING APPROVAL' : isRejectedByAdmin ? 'REJECTED' : isOnDuty ? 'DUTY ONLINE' : 'DUTY OFFLINE'}
           </button>
         </div>
 
@@ -256,8 +265,27 @@ export default function GoZoonRoadKing({
             {!isOnDuty && (
               <div className="p-8 text-center border border-stone-800 rounded-xl bg-stone-950/40 text-stone-500 text-xs space-y-2 flex flex-col items-center justify-center">
                 <AlertCircle className="w-8 h-8 text-stone-600" />
-                <span className="font-extrabold text-stone-400 text-sm">You are Off-Duty</span>
-                <span className="text-[10px] text-stone-600 max-w-[200px] mx-auto">Toggle "DUTY ONLINE" at the top to receive gig deliveries in London.</span>
+                {isAdminSuspended ? (
+                  <>
+                    <span className="font-extrabold text-red-400 text-sm">Account Suspended</span>
+                    <span className="text-[10px] text-stone-600 max-w-[220px] mx-auto">Go-Zoon has suspended this rider account. Contact platform support to be reinstated.</span>
+                  </>
+                ) : isPendingApproval ? (
+                  <>
+                    <span className="font-extrabold text-amber-400 text-sm">Awaiting Approval</span>
+                    <span className="text-[10px] text-stone-600 max-w-[220px] mx-auto">Your rider registration is under review. You'll be able to go on duty once Go-Zoon approves it.</span>
+                  </>
+                ) : isRejectedByAdmin ? (
+                  <>
+                    <span className="font-extrabold text-red-400 text-sm">Registration Rejected</span>
+                    <span className="text-[10px] text-stone-600 max-w-[220px] mx-auto">Go-Zoon did not approve this rider registration.</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="font-extrabold text-stone-400 text-sm">You are Off-Duty</span>
+                    <span className="text-[10px] text-stone-600 max-w-[200px] mx-auto">Toggle "DUTY ONLINE" at the top to receive gig deliveries in London.</span>
+                  </>
+                )}
               </div>
             )}
 
