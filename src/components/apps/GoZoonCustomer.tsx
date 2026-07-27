@@ -116,6 +116,7 @@ export default function GoZoonCustomer({
   const [isOrdersOpen, setIsOrdersOpen] = useState(false);
   const [receiptOrder, setReceiptOrder] = useState<Order | null>(null);
   const [isAccountOpen, setIsAccountOpen] = useState(false);
+  const [confirmingCancelOrder, setConfirmingCancelOrder] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [isChangingPostcode, setIsChangingPostcode] = useState(false);
@@ -865,15 +866,20 @@ export default function GoZoonCustomer({
       .sort((a, b) => b.reviewsCount - a.reviewsCount)
       .slice(0, 5);
   }, [restaurantsList, currentPostcode]);
-  const recentlyOrderedRestaurants = useMemo(() => {
+  // "Recently Ordered" surfaces the actual dishes from order history (matching how
+  // items appear in My Orders History), deduped by menu item - not by restaurantId -
+  // so multiple different dishes from the same restaurant each get their own card.
+  const recentlyOrderedItems = useMemo(() => {
     const seen = new Set<string>();
-    const list: Restaurant[] = [];
+    const list: { item: CartItem; restaurant: Restaurant }[] = [];
     for (const order of orders) {
-      if (seen.has(order.restaurantId)) continue;
       const rest = restaurantsList.find(r => r.id === order.restaurantId);
-      if (rest) {
-        seen.add(order.restaurantId);
-        list.push(rest);
+      if (!rest) continue;
+      for (const item of order.items) {
+        if (seen.has(item.menuItem.id)) continue;
+        seen.add(item.menuItem.id);
+        list.push({ item, restaurant: rest });
+        if (list.length >= 8) break;
       }
       if (list.length >= 8) break;
     }
@@ -937,6 +943,12 @@ export default function GoZoonCustomer({
       if (animationRef.current) cancelAnimationFrame(animationRef.current);
     };
   }, [activeOrder?.status]);
+
+  // Reset any pending cancel confirmation if the tracked order changes underneath it
+  // (e.g. a new order is placed, or the customer navigates to a different active order).
+  useEffect(() => {
+    setConfirmingCancelOrder(false);
+  }, [activeOrder?.id]);
 
   const getPointAtLength = (t: number) => {
     const p0 = { x: 70, y: 190 };
@@ -1153,17 +1165,36 @@ export default function GoZoonCustomer({
                 <span>Back to Store</span>
               </button>
             </div>
-            {activeOrder.status === 'Placed' && (
-              <button
-                onClick={() => {
-                  if (window.confirm('Cancel this order before the restaurant accepts it?')) {
-                    onCancelOrder(activeOrder.id);
-                  }
-                }}
-                className="w-full h-8 rounded-lg border border-red-200 text-red-600 font-bold text-[10px] flex items-center justify-center gap-1 hover:bg-red-50 cursor-pointer"
-              >
-                <span>Cancel Order</span>
-              </button>
+            {(activeOrder.status === 'Placed' || activeOrder.status === 'Preparing') && (
+              confirmingCancelOrder ? (
+                <div className="p-2.5 bg-red-50 border border-red-200 rounded-lg space-y-2">
+                  <p className="text-[10px] text-red-700 font-bold text-center">Cancel this order? This can't be undone.</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => setConfirmingCancelOrder(false)}
+                      className="h-8 rounded-lg border border-slate-200 text-slate-600 font-bold text-[10px] hover:bg-slate-50 cursor-pointer"
+                    >
+                      Keep Order
+                    </button>
+                    <button
+                      onClick={() => {
+                        onCancelOrder(activeOrder.id);
+                        setConfirmingCancelOrder(false);
+                      }}
+                      className="h-8 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold text-[10px] cursor-pointer"
+                    >
+                      Yes, Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setConfirmingCancelOrder(true)}
+                  className="w-full h-8 rounded-lg border border-red-200 text-red-600 font-bold text-[10px] flex items-center justify-center gap-1 hover:bg-red-50 cursor-pointer"
+                >
+                  <span>Cancel Order</span>
+                </button>
+              )
             )}
           </div>
 
@@ -1408,24 +1439,25 @@ export default function GoZoonCustomer({
             <div className="text-2xl">🐟</div>
           </div>
 
-          {/* Recently Ordered - restaurants derived from this customer's own order history */}
-          {showDiscoverySections && recentlyOrderedRestaurants.length > 0 && (
+          {/* Recently Ordered - the actual dishes from this customer's own order history */}
+          {showDiscoverySections && recentlyOrderedItems.length > 0 && (
             <div className="px-3 py-2 bg-white border-b border-slate-100 flex-shrink-0">
               <div className="flex items-center gap-1.5 mb-1.5">
                 <History className="w-3 h-3 text-brand-blue" />
                 <h3 className="font-extrabold text-[11px] text-slate-800">Recently Ordered</h3>
               </div>
               <div className="flex gap-2 overflow-x-auto no-scrollbar">
-                {recentlyOrderedRestaurants.map(rest => (
+                {recentlyOrderedItems.map(({ item, restaurant }) => (
                   <button
-                    key={rest.id}
-                    onClick={() => selectRestaurantSafely(rest)}
+                    key={item.menuItem.id}
+                    onClick={() => selectRestaurantSafely(restaurant)}
                     className="flex-shrink-0 w-20 text-left cursor-pointer group"
                   >
                     <div className="w-20 h-14 rounded-lg overflow-hidden border border-slate-150 bg-slate-100">
-                      {rest.image && <img src={rest.image} alt={rest.name} referrerPolicy="no-referrer" draggable={false} className="w-full h-full object-cover pointer-events-none" />}
+                      {item.menuItem.image && <img src={item.menuItem.image} alt={item.menuItem.name} referrerPolicy="no-referrer" draggable={false} className="w-full h-full object-cover pointer-events-none" />}
                     </div>
-                    <span className="block text-[9px] font-bold text-slate-700 truncate mt-1 group-hover:text-brand-blue">{rest.name}</span>
+                    <span className="block text-[9px] font-bold text-slate-700 truncate mt-1 group-hover:text-brand-blue">{item.menuItem.name}</span>
+                    <span className="block text-[8px] text-slate-400 truncate">{restaurant.name}</span>
                   </button>
                 ))}
               </div>

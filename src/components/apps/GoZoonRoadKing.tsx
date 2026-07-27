@@ -10,6 +10,7 @@ interface GoZoonRoadKingProps {
   onAssignDriver: (orderId: string, driverName: string, driverPhone: string) => void;
   onToggleDriverDuty: (phone: string, isOnDuty: boolean) => void;
   onRejectGig: (orderId: string, driverName: string) => void;
+  onCancelGig: (orderId: string, driverName: string) => void;
   onAddLog: (event: string, type: 'info' | 'success' | 'warning') => void;
 }
 
@@ -37,6 +38,7 @@ export default function GoZoonRoadKing({
   onAssignDriver,
   onToggleDriverDuty,
   onRejectGig,
+  onCancelGig,
   onAddLog
 }: GoZoonRoadKingProps): React.JSX.Element {
   const [selectedDriverName, setSelectedDriverName] = useState<string>(drivers[0]?.name || 'Dave Henderson');
@@ -106,6 +108,14 @@ export default function GoZoonRoadKing({
     if (!selectedDriver) return;
     onRejectGig(orderId, selectedDriver.name);
     onAddLog(`GIG_REJECTED: Courier ${selectedDriver.name} declined job for order #${orderId}`, 'warning');
+  };
+
+  // Confirming inline (no native confirm()) before cancelling a live, already-accepted job.
+  const [confirmingCancelJobId, setConfirmingCancelJobId] = useState<string | null>(null);
+  const handleCancelGigClick = (orderId: string) => {
+    if (!selectedDriver) return;
+    onCancelGig(orderId, selectedDriver.name);
+    setConfirmingCancelJobId(null);
   };
 
   // Handle accepting an open gig - assigns the courier as a distinct action, without
@@ -377,6 +387,39 @@ export default function GoZoonRoadKing({
                         <span>Manual Skip to House Handover</span>
                       </button>
                     </div>
+                  )}
+
+                  {/* CANCEL - available for any accepted gig up until the rider actually
+                      sets off with the food; once OutForDelivery, use the delivery-issue
+                      flow instead rather than abandoning food already in transit. */}
+                  {activeJob.status !== 'OutForDelivery' && (
+                    confirmingCancelJobId === activeJob.id ? (
+                      <div className="p-3 bg-red-950/40 border border-red-900 rounded-lg space-y-2">
+                        <p className="text-[10px] text-red-300 font-bold text-center">Cancel this delivery? The order will be marked Cancelled and the customer notified.</p>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => setConfirmingCancelJobId(null)}
+                            className="flex-1 h-8 border border-stone-700 hover:bg-stone-800 text-stone-300 font-extrabold text-xs rounded-lg cursor-pointer"
+                          >
+                            Keep Job
+                          </button>
+                          <button
+                            onClick={() => handleCancelGigClick(activeJob.id)}
+                            className="flex-1 h-8 bg-red-600 hover:bg-red-700 text-white font-extrabold text-xs rounded-lg cursor-pointer"
+                          >
+                            Yes, Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setConfirmingCancelJobId(activeJob.id)}
+                        className="w-full h-8 border border-red-900/50 hover:bg-red-950/30 text-red-500 font-extrabold text-[11px] rounded-lg flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                        <span>Cancel Delivery</span>
+                      </button>
+                    )
                   )}
                 </div>
               </div>

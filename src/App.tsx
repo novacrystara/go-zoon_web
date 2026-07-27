@@ -596,26 +596,35 @@ export default function App(): React.JSX.Element {
     }
   };
 
-  // Lets a customer cancel an order that hasn't been accepted by the restaurant yet.
+  // Lets a customer cancel their own order while it's still early in the kitchen's
+  // workflow (before the food is ready and a courier is involved).
   const handleCancelOrder = (orderId: string) => {
-    handleUpdateOrderStatus(orderId, 'Cancelled');
-    addPlatformLog(`ORDER_CANCELLED: Customer cancelled order #${orderId} before kitchen acceptance.`, 'warning');
+    handleUpdateOrderStatus(orderId, 'Cancelled', undefined, undefined, 'Cancelled by the customer', 'customer');
+    addPlatformLog(`ORDER_CANCELLED: Customer cancelled order #${orderId}.`, 'warning');
   };
 
   // Lets a restaurant decline an incoming ticket (Business App), with a reason
   // surfaced back to the customer via their order-update notification.
   const handleRejectOrder = (orderId: string, reason: string) => {
-    handleUpdateOrderStatus(orderId, 'Cancelled', undefined, undefined, reason);
+    handleUpdateOrderStatus(orderId, 'Cancelled', undefined, undefined, reason, 'restaurant');
     addPlatformLog(`ORDER_REJECTED: Restaurant declined order #${orderId}${reason ? ` - ${reason}` : ''}`, 'warning');
   };
 
-  const handleUpdateOrderStatus = (orderId: string, status: OrderStatus, customDriverName?: string, customDriverPhone?: string, cancelReason?: string) => {
+  // Lets a Road King rider back out of a gig they already accepted - distinct from
+  // onRejectGig (which declines an unaccepted open gig without affecting the order),
+  // since this cancels the live order outright and notifies the customer.
+  const handleCancelGig = (orderId: string, driverName: string) => {
+    handleUpdateOrderStatus(orderId, 'Cancelled', undefined, undefined, 'Rider Rejected the gig', 'rider');
+    addPlatformLog(`GIG_CANCELLED: Courier ${driverName} cancelled the accepted gig for order #${orderId}.`, 'warning');
+  };
+
+  const handleUpdateOrderStatus = (orderId: string, status: OrderStatus, customDriverName?: string, customDriverPhone?: string, cancelReason?: string, cancelledBy?: 'restaurant' | 'rider' | 'customer') => {
     const existingOrder = orders.find(o => o.id === orderId);
     const driverName = customDriverName !== undefined ? customDriverName : existingOrder?.driverName;
     const driverPhone = customDriverPhone !== undefined ? customDriverPhone : existingOrder?.driverPhone;
 
     // Optimistically update UI
-    setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status, driverName, driverPhone, cancelReason: cancelReason ?? o.cancelReason } : o));
+    setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status, driverName, driverPhone, cancelReason: cancelReason ?? o.cancelReason, cancelledBy: cancelledBy ?? o.cancelledBy } : o));
 
     // Update status in PostgreSQL Database
     fetchApi(`/api/orders/${orderId}`, {
@@ -623,7 +632,7 @@ export default function App(): React.JSX.Element {
       headers: {
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ status, driverName, driverPhone, cancelReason })
+      body: JSON.stringify({ status, driverName, driverPhone, cancelReason, cancelledBy })
     })
       .then(res => res.json())
       .then(data => {
@@ -753,6 +762,7 @@ export default function App(): React.JSX.Element {
             onAssignDriver={handleAssignDriver}
             onToggleDriverDuty={handleToggleDriverDuty}
             onRejectGig={handleRejectGig}
+            onCancelGig={handleCancelGig}
             onAddLog={addPlatformLog}
           />
         )}
@@ -1203,6 +1213,7 @@ export default function App(): React.JSX.Element {
                       onAssignDriver={handleAssignDriver}
                       onToggleDriverDuty={handleToggleDriverDuty}
                       onRejectGig={handleRejectGig}
+                      onCancelGig={handleCancelGig}
                       onAddLog={addPlatformLog}
                     />
                   )}

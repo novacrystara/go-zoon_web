@@ -125,6 +125,7 @@ export interface Order {
   preparingStartedAt?: string; // set when the kitchen accepts the ticket - drives the prep countdown
   deliveredAt?: string; // set when the courier marks the order Delivered - drives real per-day/week/month earnings aggregation
   cancelReason?: string;
+  cancelledBy?: 'restaurant' | 'rider' | 'customer'; // who initiated a Cancelled status - drives the wording of the cancellation notification
   rejectedByDrivers?: string[]; // driver names who declined this gig - keeps it out of their Open Gigs list without blocking other riders
   createdAt: string;
 }

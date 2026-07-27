@@ -254,6 +254,7 @@ function mapRowToOrder(row: any): any {
     preparingStartedAt: row.preparing_started_at || undefined,
     deliveredAt: row.delivered_at || undefined,
     cancelReason: row.cancel_reason || undefined,
+    cancelledBy: row.cancelled_by || undefined,
     rejectedByDrivers: row.rejected_by_drivers ? JSON.parse(row.rejected_by_drivers) : undefined,
     createdAt: row.created_at || new Date().toISOString()
   };
@@ -431,6 +432,7 @@ async function bootstrapPostgres() {
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancel_reason TEXT;
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP WITH TIME ZONE;
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS rejected_by_drivers TEXT;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancelled_by VARCHAR(20);
       ALTER TABLE drivers ADD COLUMN IF NOT EXISTS is_on_duty BOOLEAN NOT NULL DEFAULT TRUE;
     `);
 
@@ -773,7 +775,7 @@ async function startServer() {
   // API Route: Update Order Status / Assign Driver (Saves to Postgres, with Fallback)
   app.patch('/api/orders/:id', async (req, res) => {
     const { id } = req.params;
-    const { status, driverName, driverPhone, cancelReason } = req.body;
+    const { status, driverName, driverPhone, cancelReason, cancelledBy } = req.body;
     const statusLabels: Record<string, string> = {
       Preparing: 'is being prepared by the restaurant',
       ReadyForPickup: 'is ready and awaiting courier pickup',
@@ -783,10 +785,18 @@ async function startServer() {
       Delivered: 'has been delivered',
       Cancelled: 'was cancelled'
     };
-    const notificationBody = (status: string) =>
-      status === 'Cancelled' && cancelReason
-        ? `Order #${id} was cancelled by the restaurant: ${cancelReason}`
-        : `Order #${id} ${statusLabels[status]}.`;
+    // cancelledBy distinguishes who initiated a cancellation so the customer notification
+    // reads correctly - defaults to the restaurant for backward compatibility with the
+    // existing Business App "Reject" flow, which never sends this field.
+    const notificationBody = (status: string) => {
+      if (status === 'Cancelled') {
+        if (cancelledBy === 'customer') return `Order #${id} was cancelled successfully.`;
+        if (cancelledBy === 'rider' && cancelReason) return `Order #${id} was cancelled by the courier: ${cancelReason}`;
+        if (cancelReason) return `Order #${id} was cancelled by the restaurant: ${cancelReason}`;
+        return `Order #${id} was cancelled.`;
+      }
+      return `Order #${id} ${statusLabels[status]}.`;
+    };
 
     const pool = getPgPool();
     if (pool) {
@@ -797,13 +807,14 @@ async function startServer() {
               driver_name = COALESCE($2, driver_name),
               driver_phone = COALESCE($3, driver_phone),
               cancel_reason = COALESCE($4, cancel_reason),
+              cancelled_by = COALESCE($5, cancelled_by),
               preparing_started_at = CASE WHEN $1 = 'Preparing' THEN CURRENT_TIMESTAMP ELSE preparing_started_at END,
               delivered_at = CASE WHEN $1 = 'Delivered' THEN CURRENT_TIMESTAMP ELSE delivered_at END,
               updated_at = CURRENT_TIMESTAMP
-          WHERE id = $5
+          WHERE id = $6
           RETURNING *;
         `;
-        const result = await pool.query(queryText, [status || null, driverName || null, driverPhone || null, cancelReason || null, id]);
+        const result = await pool.query(queryText, [status || null, driverName || null, driverPhone || null, cancelReason || null, cancelledBy || null, id]);
         if (result.rows.length > 0) {
           console.log(`[PostgreSQL] Status updated for Order #${id}: ${status}`);
           const order = mapRowToOrder(result.rows[0]);
@@ -825,6 +836,7 @@ async function startServer() {
       if (driverName !== undefined) order.driverName = driverName;
       if (driverPhone !== undefined) order.driverPhone = driverPhone;
       if (cancelReason !== undefined) order.cancelReason = cancelReason;
+      if (cancelledBy !== undefined) order.cancelledBy = cancelledBy;
       if (status === 'Preparing' && !order.preparingStartedAt) order.preparingStartedAt = new Date().toISOString();
       if (status === 'Delivered' && !order.deliveredAt) order.deliveredAt = new Date().toISOString();
       order.updatedAt = new Date().toISOString();
