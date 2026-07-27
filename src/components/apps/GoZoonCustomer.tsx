@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Search, MapPin, ShoppingBag, Clock, Tag, Award, Check, ChevronLeft, ChevronDown, Star, Phone, HelpCircle, Navigation, ShieldAlert, CreditCard, ClipboardList, History, User, LogOut, Plus, Bike, Store, Trash2, Leaf, SlidersHorizontal, Info, Bell, MessageSquare, Flame, TrendingUp, Banknote, Download, FileText, LifeBuoy, KeyRound, X } from 'lucide-react';
 import { Restaurant, CartItem, Order, UKPostcodeZone, MenuItem, OrderStatus, CartCustomization, SavedAddress, Review, AppNotification } from '../../types';
-import { validateUKPostcode, haversineDistanceKm, NEARBY_RADIUS_KM } from '../../data/restaurants';
+import { validateUKPostcode, haversineDistanceKm, NEARBY_RADIUS_KM, getStoreClosureReason } from '../../data/restaurants';
 import LegalModal from '../LegalModal';
 import PhoneLogin from '../PhoneLogin';
 import { fetchApi, StoredSession } from '../../api';
@@ -32,6 +32,13 @@ function SearchBar({ value, onChange }: { value: string; onChange: (v: string) =
       <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
     </div>
   );
+}
+
+// A cart item's unit price is either its selected variant's absolute price (an
+// alternate size/price point - see MenuItemVariant) or the dish's own base price.
+// Never the two combined - variants replace the base price, they don't add to it.
+function getCartItemBasePrice(item: CartItem): number {
+  return item.selectedVariant ? item.selectedVariant.price : item.menuItem.price;
 }
 
 interface CheckoutParams {
@@ -154,6 +161,7 @@ export default function GoZoonCustomer({
 
   // Selected custom sizes or extras
   const [selectedOptions, setSelectedOptions] = useState<{ [key: string]: string }>({});
+  const [selectedVariantName, setSelectedVariantName] = useState<string>('');
 
   // Restaurant browsing sort order
   const [sortBy, setSortBy] = useState<'Recommended' | 'Rating' | 'Fastest' | 'Price'>('Recommended');
@@ -452,7 +460,8 @@ export default function GoZoonCustomer({
     if (outOfStockItems.includes(item.id)) return;
     setCustomizingItem(item);
     setCustomizationNotes('');
-    
+    setSelectedVariantName(item.variants && item.variants.length > 0 ? item.variants[0].name : '');
+
     // Set dynamic default options if present
     const defaults: { [key: string]: string } = {};
     if (item.options && item.options.length > 0) {
@@ -461,7 +470,7 @@ export default function GoZoonCustomer({
           defaults[opt.name] = opt.choices[0]?.name || '';
         }
       });
-    } else {
+    } else if (!item.variants || item.variants.length === 0) {
       defaults['Size'] = 'Standard';
     }
     setSelectedOptions(defaults);
@@ -473,6 +482,15 @@ export default function GoZoonCustomer({
     const customizations: CartCustomization[] = [];
     let extraPrice = 0;
     let itemCartId = customizingItem.id;
+
+    // Variants are a distinct, absolute-price choice (see MenuItemVariant) -
+    // resolved independently of the additive customization options below.
+    let selectedVariant: { name: string; price: number } | undefined;
+    if (customizingItem.variants && customizingItem.variants.length > 0) {
+      const variant = customizingItem.variants.find(v => v.name === selectedVariantName) || customizingItem.variants[0];
+      selectedVariant = variant;
+      itemCartId += `-variant_${variant.name}`;
+    }
 
     if (customizingItem.options && customizingItem.options.length > 0) {
       customizingItem.options.forEach(opt => {
@@ -503,7 +521,7 @@ export default function GoZoonCustomer({
           });
         }
       });
-    } else {
+    } else if (!customizingItem.variants || customizingItem.variants.length === 0) {
       const sizePrice = selectedOptions['Size'] === 'Large' ? 2.50 : 0;
       extraPrice = sizePrice;
       const sizeVal = selectedOptions['Size'] || 'Standard';
@@ -521,6 +539,7 @@ export default function GoZoonCustomer({
       menuItem: customizingItem,
       quantity: 1,
       customizations,
+      selectedVariant,
       notes: customizationNotes.trim() || undefined
     };
 
@@ -625,8 +644,9 @@ export default function GoZoonCustomer({
     lines.push('Items');
     lines.push('-----');
     order.items.forEach(item => {
-      const itemTotal = (item.menuItem.price + item.customizations.reduce((s, c) => s + c.additionalPrice, 0)) * item.quantity;
+      const itemTotal = (getCartItemBasePrice(item) + item.customizations.reduce((s, c) => s + c.additionalPrice, 0)) * item.quantity;
       lines.push(`${item.quantity}x ${item.menuItem.name} - £${itemTotal.toFixed(2)}`);
+      if (item.selectedVariant) lines.push(`   Option: ${item.selectedVariant.name}`);
       item.customizations.forEach(c => lines.push(`   ${c.name}: ${c.selectedOption}`));
     });
     lines.push('');
@@ -753,7 +773,7 @@ export default function GoZoonCustomer({
   // Calculations for basket
   const cartSubtotal = cart.reduce((acc, item) => {
     const customizationsCost = item.customizations.reduce((sum, c) => sum + c.additionalPrice, 0);
-    return acc + (item.menuItem.price + customizationsCost) * item.quantity;
+    return acc + (getCartItemBasePrice(item) + customizationsCost) * item.quantity;
   }, 0);
 
   const isCollection = orderMode === 'Collection';
@@ -1157,7 +1177,7 @@ export default function GoZoonCustomer({
               {activeOrder.items.map(item => (
                 <div key={item.id} className="flex justify-between text-[11px] font-medium">
                   <span>{item.quantity}x {item.menuItem.name}</span>
-                  <span className="font-bold">£{(item.menuItem.price * item.quantity).toFixed(2)}</span>
+                  <span className="font-bold">£{(getCartItemBasePrice(item) * item.quantity).toFixed(2)}</span>
                 </div>
               ))}
             </div>
@@ -1236,11 +1256,13 @@ export default function GoZoonCustomer({
 
           {/* Menu Items List */}
           <div className={`flex-1 overflow-y-auto p-3 space-y-4 ${cart.length > 0 ? 'pb-20' : ''}`}>
-            {closedRestaurants.includes(selectedRestaurant.id) ? (
+            {closedRestaurants.includes(selectedRestaurant.id) || getStoreClosureReason(selectedRestaurant) ? (
               <div className="p-6 text-center text-red-500 bg-red-50/50 border border-red-100 rounded-xl space-y-2">
                 <ShieldAlert className="w-10 h-10 mx-auto opacity-75" />
                 <p className="font-bold text-sm">Restaurant is Closed</p>
-                <p className="text-[11px] text-red-400">The merchant has toggled their kitchen offline in the Business App. Please choose another spot.</p>
+                <p className="text-[11px] text-red-400">
+                  {getStoreClosureReason(selectedRestaurant) || 'The merchant has toggled their kitchen offline in the Business App. Please choose another spot.'}
+                </p>
               </div>
             ) : (
               <>
@@ -1544,7 +1566,7 @@ export default function GoZoonCustomer({
               </div>
             ) : (
               sortedRestaurants.map(rest => {
-                const isClosed = closedRestaurants.includes(rest.id);
+                const isClosed = closedRestaurants.includes(rest.id) || !!getStoreClosureReason(rest);
                 const distanceKm = haversineDistanceKm(currentPostcode, rest);
                 return (
                   <div
@@ -1685,6 +1707,32 @@ export default function GoZoonCustomer({
               </div>
             )}
 
+            {/* Variants: alternate absolute price points (e.g. sizes) - distinct
+                from the additive customization options below */}
+            {customizingItem.variants && customizingItem.variants.length > 0 && (
+              <div className="space-y-2 border-t border-slate-100 pt-3">
+                <span className="font-extrabold text-slate-800 uppercase tracking-wider text-[9px] block">Choose an option</span>
+                <div className="grid grid-cols-2 gap-2">
+                  {customizingItem.variants.map(variant => {
+                    const isSelected = selectedVariantName === variant.name;
+                    return (
+                      <button
+                        key={variant.name}
+                        type="button"
+                        onClick={() => setSelectedVariantName(variant.name)}
+                        className={`h-8 rounded-lg border text-xs font-bold transition-all cursor-pointer flex items-center justify-between px-3 ${
+                          isSelected ? 'border-brand-blue bg-brand-blue/5 text-brand-blue' : 'border-slate-200 text-slate-600 hover:border-slate-300'
+                        }`}
+                      >
+                        <span>{variant.name}</span>
+                        <span className="font-semibold text-slate-500 text-[10px]">£{variant.price.toFixed(2)}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* Customizer Option */}
             {customizingItem.options && customizingItem.options.length > 0 ? (
               customizingItem.options.map(opt => (
@@ -1742,8 +1790,8 @@ export default function GoZoonCustomer({
                   )}
                 </div>
               ))
-            ) : (
-              /* Fallback to default Size option for legacy data */
+            ) : (!customizingItem.variants || customizingItem.variants.length === 0) ? (
+              /* Fallback to default Size option for legacy data with neither variants nor options */
               <div className="space-y-2 border-t border-slate-100 pt-3">
                 <span className="font-extrabold text-slate-800 uppercase tracking-wider text-[9px] block">Select Size</span>
                 <div className="flex gap-2">
@@ -1764,7 +1812,7 @@ export default function GoZoonCustomer({
                   })}
                 </div>
               </div>
-            )}
+            ) : null}
 
             {/* Preparation Notes */}
             <div className="space-y-2 border-t border-slate-100 pt-3">
@@ -1784,7 +1832,10 @@ export default function GoZoonCustomer({
               className="w-full h-9 bg-brand-orange hover:bg-brand-orange/95 text-white font-extrabold rounded-lg"
             >
               Add to Basket • £{(() => {
-                let currentItemPrice = customizingItem.price;
+                const hasVariants = !!customizingItem.variants && customizingItem.variants.length > 0;
+                let currentItemPrice = hasVariants
+                  ? (customizingItem.variants!.find(v => v.name === selectedVariantName) || customizingItem.variants![0]).price
+                  : customizingItem.price;
                 if (customizingItem.options && customizingItem.options.length > 0) {
                   customizingItem.options.forEach(opt => {
                     if (opt.type === 'select') {
@@ -1802,7 +1853,7 @@ export default function GoZoonCustomer({
                       });
                     }
                   });
-                } else {
+                } else if (!hasVariants) {
                   currentItemPrice += selectedOptions['Size'] === 'Large' ? 2.50 : 0;
                 }
                 return currentItemPrice.toFixed(2);
@@ -1907,7 +1958,7 @@ export default function GoZoonCustomer({
                         <div className="flex-1 space-y-0.5">
                           <h4 className="font-bold text-slate-800 text-[11px]">{item.menuItem.name}</h4>
                           <span className="text-[9px] text-slate-400 block font-semibold">
-                            {item.customizations.map(c => `${c.name}: ${c.selectedOption}`).join(', ')}
+                            {[item.selectedVariant?.name, ...item.customizations.map(c => `${c.name}: ${c.selectedOption}`)].filter(Boolean).join(', ')}
                           </span>
                           {item.notes && <p className="text-[9px] text-amber-600 font-medium italic">&ldquo;{item.notes}&rdquo;</p>}
                           <button
@@ -1920,7 +1971,7 @@ export default function GoZoonCustomer({
                           </button>
                         </div>
                         <div className="text-right space-y-1">
-                          <span className="font-bold text-slate-900 block">£{((item.menuItem.price + item.customizations.reduce((s,c)=>s+c.additionalPrice,0)) * item.quantity).toFixed(2)}</span>
+                          <span className="font-bold text-slate-900 block">£{((getCartItemBasePrice(item) + item.customizations.reduce((s,c)=>s+c.additionalPrice,0)) * item.quantity).toFixed(2)}</span>
                           <div className="flex items-center gap-1">
                             <button onClick={() => onUpdateCartQuantity(item.id, -1)} className="w-4 h-4 bg-slate-100 rounded flex items-center justify-center font-bold">-</button>
                             <span className="font-bold text-[10px] w-4 text-center">{item.quantity}</span>
@@ -2303,7 +2354,7 @@ export default function GoZoonCustomer({
                           {order.items.map(item => (
                             <div key={item.id} className="flex justify-between">
                               <span>{item.quantity}x {item.menuItem.name}</span>
-                              <span className="text-slate-400">£{(item.menuItem.price * item.quantity).toFixed(2)}</span>
+                              <span className="text-slate-400">£{(getCartItemBasePrice(item) * item.quantity).toFixed(2)}</span>
                             </div>
                           ))}
                         </div>
@@ -2699,10 +2750,12 @@ export default function GoZoonCustomer({
                   <div key={item.id} className="text-[11px]">
                     <div className="flex justify-between font-semibold text-slate-700">
                       <span>{item.quantity}x {item.menuItem.name}</span>
-                      <span>£{((item.menuItem.price + item.customizations.reduce((s, c) => s + c.additionalPrice, 0)) * item.quantity).toFixed(2)}</span>
+                      <span>£{((getCartItemBasePrice(item) + item.customizations.reduce((s, c) => s + c.additionalPrice, 0)) * item.quantity).toFixed(2)}</span>
                     </div>
-                    {item.customizations.length > 0 && (
-                      <span className="text-[9px] text-slate-400 block">{item.customizations.map(c => `${c.name}: ${c.selectedOption}`).join(', ')}</span>
+                    {(item.selectedVariant || item.customizations.length > 0) && (
+                      <span className="text-[9px] text-slate-400 block">
+                        {[item.selectedVariant?.name, ...item.customizations.map(c => `${c.name}: ${c.selectedOption}`)].filter(Boolean).join(', ')}
+                      </span>
                     )}
                   </div>
                 ))}

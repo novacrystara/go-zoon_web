@@ -362,6 +362,51 @@ export default function App(): React.JSX.Element {
       .catch(err => console.error('[Restaurants] Failed to sync min-order enforcement:', err));
   };
 
+  // Store Management: scheduled holiday closures and short manual pauses - distinct
+  // from the plain open/closed toggle, and time-bound rather than a flat switch.
+  const handleSetRestaurantHoliday = (id: string, startDate: string, endDate: string) => {
+    setRestaurantsList(prev => prev.map(r => r.id === id ? { ...r, holidayStart: startDate, holidayEnd: endDate } : r));
+    const restName = restaurantsList.find(r => r.id === id)?.name || 'Merchant';
+    addPlatformLog(`HOLIDAY_SET: "${restName}" scheduled closed ${startDate} to ${endDate}`, 'warning');
+    fetchApi(`/api/restaurants/${id}/holiday`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ startDate, endDate })
+    }).catch(err => console.error('[Restaurants] Failed to sync holiday dates:', err));
+  };
+
+  const handleClearRestaurantHoliday = (id: string) => {
+    setRestaurantsList(prev => prev.map(r => {
+      if (r.id !== id) return r;
+      const { holidayStart, holidayEnd, ...rest } = r;
+      return rest as Restaurant;
+    }));
+    fetchApi(`/api/restaurants/${id}/holiday`, { method: 'DELETE' })
+      .catch(err => console.error('[Restaurants] Failed to clear holiday dates:', err));
+  };
+
+  const handleSetRestaurantPause = (id: string, minutes: number) => {
+    const pausedUntil = new Date(Date.now() + minutes * 60000).toISOString();
+    setRestaurantsList(prev => prev.map(r => r.id === id ? { ...r, pausedUntil } : r));
+    const restName = restaurantsList.find(r => r.id === id)?.name || 'Merchant';
+    addPlatformLog(`TEMP_PAUSE: "${restName}" paused for ${minutes} minutes`, 'warning');
+    fetchApi(`/api/restaurants/${id}/pause`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ minutes })
+    }).catch(err => console.error('[Restaurants] Failed to sync pause:', err));
+  };
+
+  const handleClearRestaurantPause = (id: string) => {
+    setRestaurantsList(prev => prev.map(r => {
+      if (r.id !== id) return r;
+      const { pausedUntil, ...rest } = r;
+      return rest as Restaurant;
+    }));
+    fetchApi(`/api/restaurants/${id}/pause`, { method: 'DELETE' })
+      .catch(err => console.error('[Restaurants] Failed to clear pause:', err));
+  };
+
   const handleOnboardRestaurant = (newRestaurant: Restaurant) => {
     setRestaurantsList(prev => [newRestaurant, ...prev]);
     fetchApi('/api/restaurants', {
@@ -447,8 +492,9 @@ export default function App(): React.JSX.Element {
     }
 
     const subtotal = cart.reduce((acc, item) => {
+      const basePrice = item.selectedVariant ? item.selectedVariant.price : item.menuItem.price;
       const customizationsCost = item.customizations.reduce((sum, c) => sum + c.additionalPrice, 0);
-      return acc + (item.menuItem.price + customizationsCost) * item.quantity;
+      return acc + (basePrice + customizationsCost) * item.quantity;
     }, 0);
 
     if (selectedRestaurant.enforceMinOrder && subtotal < selectedRestaurant.minOrder) {
@@ -522,13 +568,20 @@ export default function App(): React.JSX.Element {
     addPlatformLog(`ORDER_CANCELLED: Customer cancelled order #${orderId} before kitchen acceptance.`, 'warning');
   };
 
-  const handleUpdateOrderStatus = (orderId: string, status: OrderStatus, customDriverName?: string, customDriverPhone?: string) => {
+  // Lets a restaurant decline an incoming ticket (Business App), with a reason
+  // surfaced back to the customer via their order-update notification.
+  const handleRejectOrder = (orderId: string, reason: string) => {
+    handleUpdateOrderStatus(orderId, 'Cancelled', undefined, undefined, reason);
+    addPlatformLog(`ORDER_REJECTED: Restaurant declined order #${orderId}${reason ? ` - ${reason}` : ''}`, 'warning');
+  };
+
+  const handleUpdateOrderStatus = (orderId: string, status: OrderStatus, customDriverName?: string, customDriverPhone?: string, cancelReason?: string) => {
     const existingOrder = orders.find(o => o.id === orderId);
     const driverName = customDriverName !== undefined ? customDriverName : existingOrder?.driverName;
     const driverPhone = customDriverPhone !== undefined ? customDriverPhone : existingOrder?.driverPhone;
 
     // Optimistically update UI
-    setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status, driverName, driverPhone } : o));
+    setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status, driverName, driverPhone, cancelReason: cancelReason ?? o.cancelReason } : o));
 
     // Update status in PostgreSQL Database
     fetchApi(`/api/orders/${orderId}`, {
@@ -536,7 +589,7 @@ export default function App(): React.JSX.Element {
       headers: {
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ status, driverName, driverPhone })
+      body: JSON.stringify({ status, driverName, driverPhone, cancelReason })
     })
       .then(res => res.json())
       .then(data => {
@@ -649,6 +702,11 @@ export default function App(): React.JSX.Element {
             onOnboardRestaurant={handleOnboardRestaurant}
             onToggleMinOrderEnforcement={handleToggleMinOrderEnforcement}
             onAddDishToRestaurant={handleAddDishToRestaurant}
+            onSetRestaurantHoliday={handleSetRestaurantHoliday}
+            onClearRestaurantHoliday={handleClearRestaurantHoliday}
+            onSetRestaurantPause={handleSetRestaurantPause}
+            onClearRestaurantPause={handleClearRestaurantPause}
+            onRejectOrder={handleRejectOrder}
             onAddLog={addPlatformLog}
           />
         )}
@@ -1091,6 +1149,11 @@ export default function App(): React.JSX.Element {
                       onOnboardRestaurant={handleOnboardRestaurant}
                       onToggleMinOrderEnforcement={handleToggleMinOrderEnforcement}
                       onAddDishToRestaurant={handleAddDishToRestaurant}
+                      onSetRestaurantHoliday={handleSetRestaurantHoliday}
+                      onClearRestaurantHoliday={handleClearRestaurantHoliday}
+                      onSetRestaurantPause={handleSetRestaurantPause}
+                      onClearRestaurantPause={handleClearRestaurantPause}
+                      onRejectOrder={handleRejectOrder}
                       onAddLog={addPlatformLog}
                     />
                   )}

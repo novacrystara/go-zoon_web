@@ -485,3 +485,25 @@ export function haversineDistanceKm(a: { lat: number; lng: number }, b: { lat: n
 }
 
 export const NEARBY_RADIUS_KM = 8;
+
+// Store Management: a restaurant can be closed for reasons beyond the merchant's
+// manual open/closed toggle - a scheduled holiday date range, or a short temporary
+// pause. Centralized here so the Customer app and Business app agree on the same
+// "is this actually open right now" logic.
+export function getStoreClosureReason(restaurant: Restaurant, now: Date = new Date()): string | null {
+  if (restaurant.holidayStart && restaurant.holidayEnd) {
+    const todayStr = now.toISOString().slice(0, 10);
+    if (todayStr >= restaurant.holidayStart && todayStr <= restaurant.holidayEnd) {
+      const until = new Date(restaurant.holidayEnd + 'T23:59:59').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+      return `Closed for holidays until ${until}`;
+    }
+  }
+  if (restaurant.pausedUntil) {
+    const pausedUntilMs = new Date(restaurant.pausedUntil).getTime();
+    if (!Number.isNaN(pausedUntilMs) && pausedUntilMs > now.getTime()) {
+      const minutesLeft = Math.max(1, Math.round((pausedUntilMs - now.getTime()) / 60000));
+      return `Temporarily paused - reopens in ${minutesLeft} min`;
+    }
+  }
+  return null;
+}

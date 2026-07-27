@@ -15,6 +15,15 @@ export interface NutritionInfo {
   fat: number; // grams
 }
 
+// A distinct concept from MenuItemOption: variants are alternate absolute price
+// points for the same dish (e.g. Small/Medium/Large), not additive extras. When
+// present, the customer picks exactly one variant and its price replaces the
+// dish's base price rather than adding to it.
+export interface MenuItemVariant {
+  name: string; // e.g., "Small", "Medium", "Large"
+  price: number; // absolute price for this variant
+}
+
 export interface MenuItem {
   id: string;
   name: string;
@@ -24,6 +33,7 @@ export interface MenuItem {
   category: string;
   dietary?: ('Vegan' | 'Vegetarian' | 'Gluten-Free' | 'Halal')[];
   options?: MenuItemOption[];
+  variants?: MenuItemVariant[];
   nutrition?: NutritionInfo;
 }
 
@@ -48,6 +58,17 @@ export interface Restaurant {
   openingHours?: string; // e.g. "Mon-Sun 11:00 - 22:00"
   lat: number;
   lng: number;
+  // Business registration (owner/account info, distinct from the restaurant's own
+  // public profile fields above).
+  ownerName?: string;
+  ownerEmail?: string;
+  ownerPhone?: string;
+  // Store management: a scheduled holiday closure window (inclusive, YYYY-MM-DD).
+  holidayStart?: string;
+  holidayEnd?: string;
+  // Store management: a short manual pause (ISO timestamp) distinct from the
+  // merchant's open/closed toggle - auto-expires once this time passes.
+  pausedUntil?: string;
   menu: MenuItem[];
 }
 
@@ -63,6 +84,7 @@ export interface CartItem {
   menuItem: MenuItem;
   quantity: number;
   customizations: CartCustomization[];
+  selectedVariant?: { name: string; price: number };
   notes?: string;
 }
 
@@ -100,6 +122,8 @@ export interface Order {
   driverPhone?: string;
   driverLatLng?: { lat: number; lng: number };
   rated?: boolean;
+  preparingStartedAt?: string; // set when the kitchen accepts the ticket - drives the prep countdown
+  cancelReason?: string;
   createdAt: string;
 }
 

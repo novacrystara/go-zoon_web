@@ -238,6 +238,8 @@ function mapRowToOrder(row: any): any {
     driverName: row.driver_name || undefined,
     driverPhone: row.driver_phone || undefined,
     rated: !!row.rated,
+    preparingStartedAt: row.preparing_started_at || undefined,
+    cancelReason: row.cancel_reason || undefined,
     createdAt: row.created_at || new Date().toISOString()
   };
 }
@@ -262,6 +264,14 @@ function computeServerTotal(
     if (!Number.isInteger(quantity) || quantity <= 0) return { error: 'One or more items/customizations do not match the restaurant menu.' };
 
     let unitPrice = menuItem.price;
+    // Variants are a distinct, absolute-price concept from customizations (see
+    // MenuItemVariant) - if the dish has variants, the selected one's price
+    // replaces the base price entirely rather than adding to it.
+    if (menuItem.variants && menuItem.variants.length > 0) {
+      const variant = menuItem.variants.find(v => v.name === cartItem.selectedVariant?.name);
+      if (!variant) return { error: 'One or more items/customizations do not match the restaurant menu.' };
+      unitPrice = variant.price;
+    }
     for (const c of cartItem.customizations || []) {
       const option = menuItem.options?.find(o => o.name === c.name);
       const choice = option?.choices.find(ch => ch.name === c.selectedOption);
@@ -401,6 +411,8 @@ async function bootstrapPostgres() {
       ALTER TABLE customers ADD COLUMN IF NOT EXISTS mpin_hash VARCHAR(200);
       ALTER TABLE reviews ADD COLUMN IF NOT EXISTS courier_rating SMALLINT;
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_method VARCHAR(20) DEFAULT 'Card';
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS preparing_started_at TIMESTAMP WITH TIME ZONE;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancel_reason TEXT;
     `);
 
     await client.query(`
@@ -747,7 +759,7 @@ async function startServer() {
   // API Route: Update Order Status / Assign Driver (Saves to Postgres, with Fallback)
   app.patch('/api/orders/:id', async (req, res) => {
     const { id } = req.params;
-    const { status, driverName, driverPhone } = req.body;
+    const { status, driverName, driverPhone, cancelReason } = req.body;
     const statusLabels: Record<string, string> = {
       Preparing: 'is being prepared by the restaurant',
       ReadyForPickup: 'is ready and awaiting courier pickup',
@@ -757,6 +769,10 @@ async function startServer() {
       Delivered: 'has been delivered',
       Cancelled: 'was cancelled'
     };
+    const notificationBody = (status: string) =>
+      status === 'Cancelled' && cancelReason
+        ? `Order #${id} was cancelled by the restaurant: ${cancelReason}`
+        : `Order #${id} ${statusLabels[status]}.`;
 
     const pool = getPgPool();
     if (pool) {
@@ -766,17 +782,19 @@ async function startServer() {
           SET status = COALESCE($1, status),
               driver_name = COALESCE($2, driver_name),
               driver_phone = COALESCE($3, driver_phone),
+              cancel_reason = COALESCE($4, cancel_reason),
+              preparing_started_at = CASE WHEN $1 = 'Preparing' THEN CURRENT_TIMESTAMP ELSE preparing_started_at END,
               updated_at = CURRENT_TIMESTAMP
-          WHERE id = $4
+          WHERE id = $5
           RETURNING *;
         `;
-        const result = await pool.query(queryText, [status || null, driverName || null, driverPhone || null, id]);
+        const result = await pool.query(queryText, [status || null, driverName || null, driverPhone || null, cancelReason || null, id]);
         if (result.rows.length > 0) {
           console.log(`[PostgreSQL] Status updated for Order #${id}: ${status}`);
           const order = mapRowToOrder(result.rows[0]);
           if (order.customerId) broadcastOrderUpdate(order.customerId, order);
           if (order.customerId && status && statusLabels[status]) {
-            createNotificationIfEnabled(order.customerId, 'order', 'Order update', `Order #${id} ${statusLabels[status]}.`, id).catch(() => {});
+            createNotificationIfEnabled(order.customerId, 'order', 'Order update', notificationBody(status), id).catch(() => {});
           }
           return res.json({ success: true, order, source: 'postgres' });
         }
@@ -791,11 +809,13 @@ async function startServer() {
       if (status) order.status = status;
       if (driverName !== undefined) order.driverName = driverName;
       if (driverPhone !== undefined) order.driverPhone = driverPhone;
+      if (cancelReason !== undefined) order.cancelReason = cancelReason;
+      if (status === 'Preparing' && !order.preparingStartedAt) order.preparingStartedAt = new Date().toISOString();
       order.updatedAt = new Date().toISOString();
       console.log(`[MemoryStore] Status updated for Order #${id}: ${status}`);
       if (order.customerId) broadcastOrderUpdate(order.customerId, order);
       if (order.customerId && status && statusLabels[status]) {
-        createNotificationIfEnabled(order.customerId, 'order', 'Order update', `Order #${id} ${statusLabels[status]}.`, id).catch(() => {});
+        createNotificationIfEnabled(order.customerId, 'order', 'Order update', notificationBody(status), id).catch(() => {});
       }
       return res.json({ success: true, order, source: 'memory' });
     }
@@ -1025,6 +1045,135 @@ async function startServer() {
     const isClosed = memoryDb.closedRestaurants.includes(id);
     memoryDb.closedRestaurants = isClosed ? memoryDb.closedRestaurants.filter(r => r !== id) : [...memoryDb.closedRestaurants, id];
     return res.json({ success: true, isClosed: !isClosed, source: 'memory' });
+  });
+
+  // ===== Store Management: Holiday Settings & Temporary Pause (Business App) =====
+  // Distinct from the manual open/closed toggle above - these are time-bound
+  // closures the merchant schedules in advance (holiday) or triggers briefly
+  // (pause), and they auto-lift once the date/time passes.
+
+  app.post('/api/restaurants/:id/holiday', async (req, res) => {
+    const { id } = req.params;
+    const { startDate, endDate } = req.body;
+    if (!startDate || !endDate || !/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+      return res.status(400).json({ error: 'startDate and endDate are required as YYYY-MM-DD.' });
+    }
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const result = await pool.query('SELECT data FROM restaurants WHERE id = $1;', [id]);
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Restaurant not found.' });
+        const restaurant = result.rows[0].data as Restaurant;
+        restaurant.holidayStart = startDate;
+        restaurant.holidayEnd = endDate;
+        await pool.query('UPDATE restaurants SET data = $1 WHERE id = $2;', [JSON.stringify(restaurant), id]);
+        return res.json({ success: true, restaurant, source: 'postgres' });
+      } catch (err) {
+        console.error('[PostgreSQL] Error setting holiday, using memory fallback:', err);
+      }
+    }
+    const restaurant = memoryDb.restaurants.find(r => r.id === id) || UK_RESTAURANTS.find(r => r.id === id);
+    if (!restaurant) return res.status(404).json({ error: 'Restaurant not found.' });
+    restaurant.holidayStart = startDate;
+    restaurant.holidayEnd = endDate;
+    return res.json({ success: true, restaurant, source: 'memory' });
+  });
+
+  app.delete('/api/restaurants/:id/holiday', async (req, res) => {
+    const { id } = req.params;
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const result = await pool.query('SELECT data FROM restaurants WHERE id = $1;', [id]);
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Restaurant not found.' });
+        const restaurant = result.rows[0].data as Restaurant;
+        delete restaurant.holidayStart;
+        delete restaurant.holidayEnd;
+        await pool.query('UPDATE restaurants SET data = $1 WHERE id = $2;', [JSON.stringify(restaurant), id]);
+        return res.json({ success: true, restaurant, source: 'postgres' });
+      } catch (err) {
+        console.error('[PostgreSQL] Error clearing holiday, using memory fallback:', err);
+      }
+    }
+    const restaurant = memoryDb.restaurants.find(r => r.id === id) || UK_RESTAURANTS.find(r => r.id === id);
+    if (!restaurant) return res.status(404).json({ error: 'Restaurant not found.' });
+    delete restaurant.holidayStart;
+    delete restaurant.holidayEnd;
+    return res.json({ success: true, restaurant, source: 'memory' });
+  });
+
+  app.post('/api/restaurants/:id/pause', async (req, res) => {
+    const { id } = req.params;
+    const minutes = Number(req.body?.minutes);
+    if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 24 * 60) {
+      return res.status(400).json({ error: 'minutes must be a positive number up to 1440.' });
+    }
+    const pausedUntil = new Date(Date.now() + minutes * 60000).toISOString();
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const result = await pool.query('SELECT data FROM restaurants WHERE id = $1;', [id]);
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Restaurant not found.' });
+        const restaurant = result.rows[0].data as Restaurant;
+        restaurant.pausedUntil = pausedUntil;
+        await pool.query('UPDATE restaurants SET data = $1 WHERE id = $2;', [JSON.stringify(restaurant), id]);
+        return res.json({ success: true, restaurant, source: 'postgres' });
+      } catch (err) {
+        console.error('[PostgreSQL] Error setting pause, using memory fallback:', err);
+      }
+    }
+    const restaurant = memoryDb.restaurants.find(r => r.id === id) || UK_RESTAURANTS.find(r => r.id === id);
+    if (!restaurant) return res.status(404).json({ error: 'Restaurant not found.' });
+    restaurant.pausedUntil = pausedUntil;
+    return res.json({ success: true, restaurant, source: 'memory' });
+  });
+
+  app.delete('/api/restaurants/:id/pause', async (req, res) => {
+    const { id } = req.params;
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const result = await pool.query('SELECT data FROM restaurants WHERE id = $1;', [id]);
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Restaurant not found.' });
+        const restaurant = result.rows[0].data as Restaurant;
+        delete restaurant.pausedUntil;
+        await pool.query('UPDATE restaurants SET data = $1 WHERE id = $2;', [JSON.stringify(restaurant), id]);
+        return res.json({ success: true, restaurant, source: 'postgres' });
+      } catch (err) {
+        console.error('[PostgreSQL] Error clearing pause, using memory fallback:', err);
+      }
+    }
+    const restaurant = memoryDb.restaurants.find(r => r.id === id) || UK_RESTAURANTS.find(r => r.id === id);
+    if (!restaurant) return res.status(404).json({ error: 'Restaurant not found.' });
+    delete restaurant.pausedUntil;
+    return res.json({ success: true, restaurant, source: 'memory' });
+  });
+
+  // API Route: Real average rating + review count computed from actual reviews
+  // (Business App Reports) - falls back to the restaurant's static seeded rating
+  // when it has no reviews yet, so a brand-new listing doesn't show a blank 0.
+  app.get('/api/restaurants/:id/rating-summary', async (req, res) => {
+    const { id } = req.params;
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const result = await pool.query('SELECT AVG(rating)::float AS avg_rating, COUNT(*)::int AS count FROM reviews WHERE restaurant_id = $1;', [id]);
+        const row = result.rows[0];
+        if (row && Number(row.count) > 0) {
+          return res.json({ averageRating: Math.round(Number(row.avg_rating) * 10) / 10, totalReviews: Number(row.count), computed: true });
+        }
+      } catch (err) {
+        console.error('[PostgreSQL] Error computing rating summary, using memory fallback:', err);
+      }
+    }
+    const reviews = memoryDb.reviews.filter(r => r.restaurantId === id);
+    if (reviews.length > 0) {
+      const avg = reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length;
+      return res.json({ averageRating: Math.round(avg * 10) / 10, totalReviews: reviews.length, computed: true });
+    }
+    const catalog = await getRestaurantCatalog();
+    const restaurant = catalog.find(r => r.id === id);
+    return res.json({ averageRating: restaurant?.rating ?? 0, totalReviews: restaurant?.reviewsCount ?? 0, computed: false });
   });
 
   // API Route: Toggle a menu item's stock status (Business App)
