@@ -37,8 +37,8 @@ export default function Footer() {
       
       <div>
         <h3 className="mb-[16px] text-white text-[15px] font-heading font-bold">Contact Us</h3>
-        <p className="block m-0 mb-[9px] text-[#dbe6ff] text-[13px] leading-[1.45] font-[650]">hello@go-zoon.co.uk</p>
-        <p className="block m-0 mb-[9px] text-[#dbe6ff] text-[13px] leading-[1.45] font-[650]">+44 7700 900123</p>
+        <p className="block m-0 mb-[9px] text-[#dbe6ff] text-[13px] leading-[1.45] font-[650]">gozooncoming@gmail.com</p>
+        <p className="block m-0 mb-[9px] text-[#dbe6ff] text-[13px] leading-[1.45] font-[650]">+44 7733648221</p>
         <p className="block m-0 mb-[9px] text-[#dbe6ff] text-[22px] leading-[1.45] font-[650] tracking-[0.18em]">f · ◎ · in · X</p>
       </div>
       
