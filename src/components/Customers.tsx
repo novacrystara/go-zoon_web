@@ -9,7 +9,7 @@ export default function Customers() {
 
   return (
     <section 
-      ref={ref as any}
+      ref={ref}
       id="customers" 
       className={`customers audience section relative overflow-hidden px-[28px] md:px-[max(60px,calc((100vw-1215px)/2))] min-h-[610px] grid grid-cols-1 md:grid-cols-[minmax(440px,42%)_1fr] items-center gap-[40px] md:gap-[70px] pt-[54px] md:pt-[75px] pb-[54px] md:pb-[70px] bg-[radial-gradient(circle_at_76%_48%,rgba(117,169,255,0.18),transparent_30%),#fff] reveal-up ${isVisible ? 'reveal-visible' : ''}`}
     >

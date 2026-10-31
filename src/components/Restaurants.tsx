@@ -9,7 +9,7 @@ export default function Restaurants() {
 
   return (
     <section 
-      ref={ref as any}
+      ref={ref}
       id="restaurants" 
       className={`audience restaurants section relative overflow-hidden px-[28px] md:px-[max(60px,calc((100vw-1215px)/2))] min-h-[520px] grid grid-cols-1 md:grid-cols-[minmax(440px,42%)_1fr] items-center gap-[40px] md:gap-[70px] pt-[54px] md:pt-[75px] pb-[54px] md:pb-[70px] bg-white reveal-up ${isVisible ? 'reveal-visible' : ''}`}
     >
@@ -82,7 +82,7 @@ export default function Restaurants() {
           className="w-full md:w-auto inline-flex items-center justify-center min-h-[48px] px-[22px] rounded-full font-heading font-black text-[14px] leading-none text-white bg-gradient-to-br from-brand-orange to-[#ff6d09] shadow-[0_12px_24px_rgba(255,74,20,0.22)] hover:shadow-[0_12px_28px_rgba(255,74,20,0.35),0_0_20px_rgba(255,74,20,0.15)] hover:scale-104 active:scale-98 transition-all duration-300 ease-out"
           data-role="Restaurant Owner"
         >
-          Register Your Restaurant's Interest
+          Register Your Restaurant&apos;s Interest
           <b className="grid place-items-center w-[31px] h-[31px] ml-[13px] rounded-full bg-white text-brand-orange text-[20px] leading-none">→</b>
         </Link>
       </div>

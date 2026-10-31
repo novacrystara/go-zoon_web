@@ -45,7 +45,7 @@ export default function Footer() {
       <div>
         <h3 className="mb-[16px] text-white text-[15px] font-heading font-bold">Important</h3>
         <p className="block m-0 mb-[9px] text-[#dbe6ff] text-[13px] leading-[1.45] font-[650]">
-          GO-ZOON is currently in pilot stage. Features marked "Planned" are not yet live.
+          GO-ZOON is currently in pilot stage. Features marked &quot;Planned&quot; are not yet live.
         </p>
       </div>
       

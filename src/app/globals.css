@@ -127,20 +127,16 @@ h3 {
 }
 
 @media (min-width: 1024px) {
-  .max-w-\[780px\] {
-    width: 150%;
-    max-width: none;
-    position: absolute;
-    top: 5%;
-    right: -21%;
+  .hero-visual-img {
+    max-width: 620px;
+    transform: translateX(24px);
   }
 }
 
-@media (min-width: 1024px) {
-  .lg\:max-w-\[560px\] {
-    max-width: 560px;
-    right: -10%;
-    top: 2%;
+@media (min-width: 1280px) {
+  .hero-visual-img {
+    max-width: 680px;
+    transform: translateX(40px);
   }
 }
 
@@ -331,4 +327,87 @@ button.flex.flex-col.items-center.justify-center.min-h-\[150px\].p-\[15px_10px\]
 img.base.relative.z-\[1\].w-full.max-w-\[131\.39\%\].left-\[-15\%\].top-\[37\%\].h-auto.rounded-none.transition-transform.duration-500.ease-\[cubic-bezier\(0\.2\,1\,0\.3\,1\)\].hover\:scale-103.will-change-transform {
   grid-column-start: 2;
   width: 100%;
+}
+
+@media (min-width: 1024px) {
+  .max-w-\[780px\] {
+    width: -webkit-fill-available;
+    max-width: none;
+    position: absolute;
+    top: 5%;
+    right: -11%;
+  }
+}
+
+/* ============================================================
+   Go-Zoon Live Waitlist Delivery Bike & Speed Trails Animation
+   ============================================================ */
+
+@keyframes bikeDriveAcross {
+  0% {
+    left: -190px;
+  }
+  100% {
+    left: calc(100% + 50px);
+  }
+}
+
+@keyframes bikeSuspension {
+  0%, 100% {
+    transform: translateY(0px) rotate(0deg);
+  }
+  20% {
+    transform: translateY(-1.5px) rotate(-0.5deg);
+  }
+  40% {
+    transform: translateY(0.6px) rotate(0.3deg);
+  }
+  60% {
+    transform: translateY(-1px) rotate(-0.2deg);
+  }
+  80% {
+    transform: translateY(0.3px) rotate(0.1deg);
+  }
+}
+
+@keyframes trailFlicker {
+  0%, 100% {
+    opacity: 0.9;
+    transform: scaleX(1);
+  }
+  50% {
+    opacity: 0.65;
+    transform: scaleX(1.12);
+  }
+}
+
+.delivery-runner {
+  animation: bikeDriveAcross 6.8s linear infinite;
+  will-change: left;
+}
+
+.animate-bike-bounce {
+  animation: bikeSuspension 1.4s ease-in-out infinite;
+  will-change: transform;
+}
+
+.animate-trail-flicker {
+  animation: trailFlicker 0.6s ease-in-out infinite alternate;
+  will-change: opacity, transform;
+}
+
+/* Accessibility: Respect Reduced Motion Preferences */
+@media (prefers-reduced-motion: reduce) {
+  .delivery-runner {
+    animation: none !important;
+    left: auto !important;
+    right: 12px !important;
+    transform: translateY(0) !important;
+  }
+  .animate-bike-bounce {
+    animation: none !important;
+  }
+  .animate-trail-flicker {
+    animation: none !important;
+  }
 }

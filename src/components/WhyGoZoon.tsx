@@ -11,7 +11,7 @@ export default function WhyGoZoon() {
 
   return (
     <section
-      ref={ref as any}
+      ref={ref}
       id="why"
       className={`why section relative overflow-hidden px-[28px] md:px-[max(60px,calc((100vw-1215px)/2))] min-h-[380px] grid grid-cols-1 md:grid-cols-[350px_1fr] min-[1121px]:grid-cols-[350px_minmax(280px,1fr)_90px_minmax(280px,1fr)] items-center gap-[20px] min-[1121px]:gap-[18px] pt-[52px] pb-[52px] text-white
       bg-[radial-gradient(circle_at_96%_23%,rgba(0,111,255,0.45)_0_2px,transparent_3px),linear-gradient(135deg,#001b60_0%,#001045_100%)] bg-[length:22px_22px,auto] bg-[position:0_0,0_0]
@@ -38,7 +38,7 @@ export default function WhyGoZoon() {
 
       <div className="compare dark-card relative z-[1] min-h-[305px] p-[34px_44px] rounded-[18px] text-white bg-white/12 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08)] max-[1120px]:-translate-x-[7px]">
         <p className="mb-[8px] text-[#72809a] font-black tracking-[0.07em] uppercase text-[14px]">Industry Average</p>
-        <strong ref={industryRef as any} className="block text-[48px] leading-none font-black">{industryCommission}</strong>
+        <strong ref={industryRef} className="block text-[48px] leading-none font-black">{industryCommission}</strong>
         <span className="block my-[4px] mb-[22px] font-[800]">commission</span>
         <ul className="grid gap-[11px] m-0 pt-[18px] pb-0 border-t border-white/16 list-none font-[850]">
           <li className="flex items-center text-[15px] before:content-['×'] before:inline-grid before:place-items-center before:w-[18px] before:h-[18px] before:mr-[12px] before:rounded-full before:text-brand-orange before:border-[2px] before:border-brand-orange before:text-[14px] before:leading-none">Higher menu prices</li>
@@ -58,7 +58,7 @@ export default function WhyGoZoon() {
 
       <div className="compare light-card relative z-[1] min-h-[305px] p-[34px_44px] rounded-[18px] text-[#17233d] bg-white shadow-[0_18px_45px_rgba(1,39,113,0.16)] max-[1120px]:-translate-x-[7px] max-[1120px]:-translate-y-[6px]">
         <p className="mb-[8px] text-[#323b50] font-black tracking-[0.07em] uppercase text-[14px]">GO-ZOON</p>
-        <strong ref={gozoonRef as any} className="block text-brand-orange text-[48px] leading-none font-black">{gozoonCommission}</strong>
+        <strong ref={gozoonRef} className="block text-brand-orange text-[48px] leading-none font-black">{gozoonCommission}</strong>
         <span className="block text-[#17233d] my-[4px] mb-[22px] font-[800]">commission</span>
         <ul className="grid gap-[11px] m-0 pt-[18px] pb-0 border-t border-[#e5eaf4] list-none font-[850]">
           <li className="flex items-center text-[15px] before:content-['✓'] before:inline-grid before:place-items-center before:w-[18px] before:h-[18px] before:mr-[12px] before:rounded-full before:text-white before:bg-brand-orange before:text-[14px] before:leading-none">Exact menu prices</li>
