@@ -8,7 +8,7 @@ export default function HowItWorks() {
 
   return (
     <section 
-      ref={ref as any}
+      ref={ref}
       id="how-it-works" 
       className={`flow section relative overflow-hidden px-[28px] md:px-[max(60px,calc((100vw-1215px)/2))] pt-[36px] pb-[82px] text-center bg-[radial-gradient(90%_72%_at_50%_0%,#fff_0%,#fff_56%,transparent_57%),linear-gradient(180deg,#f6fbff_0%,#fff_75%)] reveal-up ${isVisible ? 'reveal-visible' : ''}`}
     >

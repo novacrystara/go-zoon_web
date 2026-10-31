@@ -9,7 +9,7 @@ export default function Riders() {
 
   return (
     <section 
-      ref={ref as any}
+      ref={ref}
       id="riders" 
       className={`riders audience section relative overflow-hidden px-[28px] md:px-[max(60px,calc((100vw-1215px)/2))] min-h-[520px] grid grid-cols-1 md:grid-cols-[minmax(440px,42%)_1fr] items-center gap-[40px] md:gap-[70px] pt-[54px] md:pt-[75px] pb-[54px] md:pb-[70px] bg-white reveal-up ${isVisible ? 'reveal-visible' : ''}`}
     >
@@ -23,7 +23,7 @@ export default function Riders() {
           Ride With Road-King.<br/><span className="text-brand-orange">Earn More. Grow More.</span>
         </h2>
         <p className="max-w-[430px] text-[#273954] text-[16px] leading-[1.46] font-[650]">
-          Road-King is GO-ZOON's driver network, built to support you on every ride.
+          Road-King is GO-ZOON&apos;s driver network, built to support you on every ride.
         </p>
         
         <div className="benefit-list grid gap-[18px] my-[28px]">
@@ -32,7 +32,7 @@ export default function Riders() {
               ▣
             </span>
             <p className="m-0 text-[#30425e] text-[13px] leading-[1.35] font-bold">
-              <b className="text-[#1d2e4d] text-[14px]">Insurance support</b> <small className="inline-flex ml-[6px] py-[4px] px-[9px] rounded-full text-brand-blue bg-[#dbe8ff] text-[9px] leading-none uppercase font-bold">Coming Soon</small><br/>We've got your back, on and off the road.
+              <b className="text-[#1d2e4d] text-[14px]">Insurance support</b> <small className="inline-flex ml-[6px] py-[4px] px-[9px] rounded-full text-brand-blue bg-[#dbe8ff] text-[9px] leading-none uppercase font-bold">Coming Soon</small><br/>We&apos;ve got your back, on and off the road.
             </p>
           </div>
           <div className="benefit flex md:grid grid-cols-[58px_1fr] items-center gap-[14px] group">
