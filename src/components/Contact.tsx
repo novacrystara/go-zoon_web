@@ -159,21 +159,7 @@ export default function Contact() {
         {/* Live Waitlist Members Badge in Contact Section */}
         <WaitlistLiveBadge variant="contact" />
 
-        <div className="role-cards grid grid-cols-2 md:grid-cols-4 gap-[14px] mt-[16px]">
-          <button
-            type="button"
-            data-role="Investor"
-            onClick={() => setRole("Investor")}
-            className="flex flex-col items-center justify-center min-h-[150px] p-[15px_10px] border-none rounded-[10px] bg-white text-[#1d2e4d] shadow-[0_10px_24px_rgba(11,44,108,0.10)] cursor-pointer hover:-translate-y-[4px] hover:shadow-[0_15px_30px_rgba(11,44,108,0.15)] transition-all duration-300 will-change-transform"
-          >
-            <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#073db7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mb-[10px]">
-              <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
-              <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
-            </svg>
-            <span className="font-black text-[13px] md:text-[14px] mb-[4px] text-[#1d2e4d] text-center">For<br/>Investors</span>
-            <span className="text-[11px] md:text-[12px] font-[600] text-[#5c6a86] leading-[1.3] text-center">Business &amp; partnership<br/>opportunities</span>
-          </button>
-          
+        <div className="role-cards grid grid-cols-2 gap-[14px] mt-[16px]">
           <button
             type="button"
             data-role="Restaurant Owner"
@@ -187,20 +173,6 @@ export default function Contact() {
             </svg>
             <span className="font-black text-[13px] md:text-[14px] mb-[4px] text-[#1d2e4d] text-center">For<br/>Restaurants</span>
             <span className="text-[11px] md:text-[12px] font-[600] text-[#5c6a86] leading-[1.3] text-center">Register your<br/>restaurant&apos;s interest</span>
-          </button>
-          
-          <button
-            type="button"
-            data-role="Customer"
-            onClick={() => setRole("Customer")}
-            className="flex flex-col items-center justify-center min-h-[150px] p-[15px_10px] border-none rounded-[10px] bg-white text-[#1d2e4d] shadow-[0_10px_24px_rgba(11,44,108,0.10)] cursor-pointer hover:-translate-y-[4px] hover:shadow-[0_15px_30px_rgba(11,44,108,0.15)] transition-all duration-300 will-change-transform"
-          >
-            <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#17233d" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mb-[10px]">
-              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
-              <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
-            </svg>
-            <span className="font-black text-[13px] md:text-[14px] mb-[4px] text-[#1d2e4d] text-center">For<br/>Customers</span>
-            <span className="text-[11px] md:text-[12px] font-[600] text-[#5c6a86] leading-[1.3] text-center">Get notified<br/>when we launch</span>
           </button>
           
           <button
@@ -223,10 +195,21 @@ export default function Contact() {
       <div className="form-wrap grid grid-cols-1 min-[1121px]:grid-cols-[minmax(430px,1fr)_220px] items-stretch rounded-[20px] overflow-hidden shadow-[0_18px_45px_rgba(1,39,113,0.16)] bg-white">
         <form ref={formRef} className="waitlist-form p-[26px_34px_18px]" noValidate onSubmit={handleSubmit}>
           
-          {/* Form Header with Live Count Badge */}
-          <div className="flex flex-wrap items-center justify-between gap-[10px] mb-[18px]">
-            <h2 className="text-[#15233d] text-[27px] font-black m-0">Join the Waitlist</h2>
-            <WaitlistLiveBadge variant="form-header" />
+          {/* Form Header with Live Count Badge and Movement Callout */}
+          <div className="mb-[18px]">
+            <div className="flex flex-wrap items-center justify-between gap-[10px]">
+              <h2 className="text-[#15233d] text-[27px] font-black m-0 leading-tight">
+                Join the Waitlist
+              </h2>
+              <WaitlistLiveBadge variant="form-header" />
+            </div>
+            <p className="text-[13px] font-[800] text-[#5c6a86] mt-[5px] mb-0 flex items-center gap-[5px] flex-wrap">
+              <span>Be part of the</span>
+              <span className="text-[#0755E8] font-black">Go</span><span className="text-brand-orange font-black">Zoon</span>
+              <span className="text-[#15233d] font-black">Movement</span>
+              <span className="text-brand-orange text-[12px]">✦</span>
+              <span className="text-[#8796af] font-semibold text-[12px]">— early priority access</span>
+            </p>
           </div>
 
           {/* Hidden honeypot field for anti-spam */}
@@ -255,9 +238,7 @@ export default function Contact() {
                 disabled={isSubmitting}
               >
                 <option value="">Select your role</option>
-                <option value="Investor">Investor</option>
                 <option value="Restaurant Owner">Restaurant Owner</option>
-                <option value="Customer">Customer</option>
                 <option value="Rider">Rider</option>
                 <option value="Other">Other</option>
               </select>

@@ -91,28 +91,43 @@ export default function WaitlistLiveBadge({
 
   if (variant === "contact") {
     return (
-      <div
-        className={`group relative overflow-hidden inline-flex items-center gap-[10px] bg-white border border-[#dfe8f7] rounded-full px-[18px] py-[8px] shadow-[0_6px_20px_rgba(7,61,183,0.06)] my-[16px] transition-all duration-300 min-h-[46px] select-none hover:border-[#cbe0ff] hover:shadow-[0_8px_24px_rgba(7,85,232,0.12)] ${className}`}
-        aria-live="polite"
-      >
-        {/* Animated Delivery Bike & Trails Feature */}
-        <BikeAnimationLayer />
-
-        {/* Foreground Content */}
-        <div className="relative z-[10] flex items-center gap-[8px] md:gap-[10px] select-none pointer-events-none">
-          <span className="relative flex h-2.5 w-2.5 shrink-0">
+      <div className={`waitlist-social-proof flex flex-col items-start gap-[8px] my-[16px] ${className}`}>
+        {/* "Join the GoZoon Movement" Tagline in Authentic Logo Colors */}
+        <div className="inline-flex items-center gap-[7px] px-[13px] py-[4px] rounded-full bg-white/95 border border-[#cbe0ff] shadow-[0_4px_14px_rgba(7,85,232,0.06)] backdrop-blur-sm transition-all duration-300 hover:border-[#ffcfb5] hover:shadow-[0_4px_16px_rgba(255,121,0,0.12)]">
+          <span className="relative flex h-2 w-2">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-brand-orange opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-brand-orange shadow-[0_0_8px_rgba(255,121,0,0.6)]"></span>
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-brand-orange shadow-[0_0_6px_rgba(255,121,0,0.5)]"></span>
           </span>
-          <span className="text-[13px] md:text-[14px] font-[850] text-[#1d2e4d] tracking-tight whitespace-nowrap drop-shadow-[0_1px_2px_rgba(255,255,255,0.95)]">
-            Live Waitlist:{" "}
-            <span className="text-brand-orange font-black text-[15px] tabular-nums tracking-wide drop-shadow-[0_1px_1px_rgba(255,255,255,0.95)]">
-              {displayCount}
-            </span>{" "}
-            <span className="text-[#3a4864] font-bold">
-              {isSingular ? "member" : "members"} joined
+          <span className="text-[12px] md:text-[13px] font-[900] tracking-[0.03em] uppercase text-[#061A3A]">
+            Join the <span className="text-[#0755E8]">Go</span><span className="text-brand-orange">Zoon</span> Movement
+          </span>
+          <span className="text-[11px] text-brand-orange font-bold">✦</span>
+        </div>
+
+        {/* Live Waitlist Badge with Animated Delivery Bike & Speed Trails */}
+        <div
+          className="group relative overflow-hidden inline-flex items-center gap-[10px] bg-white border border-[#dfe8f7] rounded-full px-[18px] py-[8px] shadow-[0_6px_20px_rgba(7,61,183,0.06)] transition-all duration-300 min-h-[46px] select-none hover:border-[#cbe0ff] hover:shadow-[0_8px_24px_rgba(7,85,232,0.12)]"
+          aria-live="polite"
+        >
+          {/* Animated Delivery Bike & Trails Feature */}
+          <BikeAnimationLayer />
+
+          {/* Foreground Content */}
+          <div className="relative z-[10] flex items-center gap-[8px] md:gap-[10px] select-none pointer-events-none">
+            <span className="relative flex h-2.5 w-2.5 shrink-0">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-brand-orange opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-brand-orange shadow-[0_0_8px_rgba(255,121,0,0.6)]"></span>
             </span>
-          </span>
+            <span className="text-[13px] md:text-[14px] font-[850] text-[#1d2e4d] tracking-tight whitespace-nowrap drop-shadow-[0_1px_2px_rgba(255,255,255,0.95)]">
+              Live Waitlist:{" "}
+              <span className="text-brand-orange font-black text-[15px] tabular-nums tracking-wide drop-shadow-[0_1px_1px_rgba(255,255,255,0.95)]">
+                {displayCount}
+              </span>{" "}
+              <span className="text-[#3a4864] font-bold">
+                {isSingular ? "member" : "members"} joined
+              </span>
+            </span>
+          </div>
         </div>
       </div>
     );

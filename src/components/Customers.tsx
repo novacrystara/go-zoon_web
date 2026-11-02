@@ -64,7 +64,7 @@ export default function Customers() {
         <Link 
           href="#contact" 
           className="w-full md:w-auto inline-flex items-center justify-center min-h-[48px] px-[22px] rounded-full font-heading font-black text-[14px] leading-none text-white bg-gradient-to-br from-brand-blue to-[#0b55d5] shadow-[0_12px_24px_rgba(7,61,183,0.22)] hover:scale-104 active:scale-98 transition-all duration-300 ease-out"
-          data-role="Customer"
+          data-role="Other"
         >
           Get Notified at Launch
           <b className="grid place-items-center w-[31px] h-[31px] ml-[13px] rounded-full bg-white text-brand-orange text-[20px] leading-none">→</b>
