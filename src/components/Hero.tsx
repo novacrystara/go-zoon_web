@@ -58,7 +58,7 @@ export default function Hero() {
 
       <div className="hero-art hero-visual flex items-center justify-end self-center md:animate-[floatY_5s_ease-in-out_infinite] md:will-change-transform z-[1]" aria-hidden="true">
         <Image
-          src="/assets/landing-page-gozoon.png"
+          src="/assets/faded-london-delivery-feast.png"
           alt="GO-ZOON Delivery"
           width={640}
           height={458}
